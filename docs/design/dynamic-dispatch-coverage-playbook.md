@@ -194,7 +194,7 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
 | C/C++ | (callback structs / vtables) | function-pointer dispatch | ? | ⬜ |
 | Dart | Flutter | setState → build; build → child widgets | S + X | ✅ **setState→build synthesizer** (Dart analog of react-render: a State method whose body calls `setState(` → `build`) gated to `.dart` + **foundational Dart method-range fix** — Dart models a method body as a *sibling* of the signature, so method nodes were signature-only (`end==start`); now `endLine` spans the body (required for ALL body analysis: callees, context slices, the synthesizer's body scan). counter `initState→build`, books `build→BookDetail/BookForm`; widget composition already static (compass_app `build→ErrorIndicator/HomeButton`). Controls unchanged (excalidraw 9,290 / django 302 — the range fix only extends sibling-body grammars). 🔬 MVVM Command/ChangeNotifier dispatch (compass_app — no setState) + `Navigator.push(MaterialPageRoute(builder:))` nav routes |
 | Lua / Luau | Neovim / Roblox | module dispatch (require→mod, mod.fn); event/callback | — | ✅ **already covered for the dominant flow (measure-first, no code change)** — Neovim is module-heavy (`require('x')` + `x.fn()`), and the general import + name resolution already handles it: telescope.nvim **220 imports + 335 cross-file `mod.fn` calls**, traces end-to-end (`map_entries ← init.lua → get_current_picker (state.lua)`). Luau instance-path `require(game:GetService(...))` handled by the extractor. 🔬 event-callback registration (`vim.keymap.set(…, fn)`, autocmd `callback=`, Roblox `signal:Connect(fn)`) is predominantly INLINE anonymous closures (corpus ~12 inline vs ~2 named) — the anonymous-handler frontier; named handlers too rare to justify a synthesizer |
-| Scala | (Akka / Play) | actor message → handler | ? | ⬜ |
+| Scala | Play / Akka | request → conf/routes → controller action | R + X | ✅ **Play `conf/routes` → controller** — the extensionless `conf/routes` wasn't indexed; added narrow file-walk opt-in (`isPlayRoutesFile`) + a Play resolver parsing `METHOD /path Controller.action(args)` → the action method (computer-database **0→8, 7/8**; starter 0→4, 3/4 — the unresolved are Play's framework `Assets` controller, external). Scala general controller→DAO dispatch already resolves. No-regression: the file-walk change only ADDS Play routes files (excalidraw 9,290 / suite 800 unchanged). 🔬 SIRD programmatic router (`-> /v1 Router` include + `case GET(p"/x")` in code) + Akka actor `receive`/`Behaviors.receiveMessage` message→handler |
 
 (Verify the exact supported set against `src/extraction/languages/` and
 `src/resolution/frameworks/` before starting — this table is a starting point.)
@@ -476,6 +476,20 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
   building / partial coverage is worse than none", none was built — no code change; recorded as validated.
   Agent A/B (actions.utils map flow, n=2/arm): codegraph **0 read / 0 grep / 18–24s** vs without **1 read
   (+glob) / 24–25s** — small flow so modest, but the 0-read confirms the module dispatch is navigable.
+- **Scala / Play (validated 2026-05-23, play-samples: computer-database / starter / rest-api) — Play conf/routes → controller.**
+  Scala's general dispatch (controller→DAO) already resolves, but Play declares routes in an EXTENSIONLESS
+  `conf/routes` file (`GET /computers controllers.Application.list(p: Int ?= 0)`) the file walk never indexed
+  (`isSourceFile` requires an extension). Added a narrow opt-in (`isPlayRoutesFile`: `conf/routes` / `*.routes`)
+  routed through the no-grammar (yaml-style) path, plus a Play resolver that parses each
+  `METHOD /path Controller.action(args)` line (dropping package prefix + args) and resolves `Controller.action`
+  to the action method in that controller class. computer-database **0→8 routes, 7/8** (the 1 unresolved is
+  `controllers.Assets.versioned` — Play's framework Assets controller, external), starter 0→4 (3/4). The flow
+  connects request→route→controller→DAO. A/B (list-computers, n=2/arm): codegraph **0 read / 0 grep / 3
+  codegraph / 17–22s** vs without **2–3 read / 1–2 grep + glob / 16–17s**. **No-regression:** the file-walk
+  change only ADDS Play routes files (narrow match) — excalidraw 9,290 and the full suite (800) unchanged.
+  **Residuals (frontier):** Play SIRD programmatic routers (`-> /v1 v1.PostRouter` include + `case GET(p"/x")`
+  in a Router class — rest-api-example) and Akka actor message→handler (`receive { case Msg => … }` /
+  `Behaviors.receiveMessage` — untyped, a synthesizer shape).
 - **Difficulty gradient is real:** named-ref dispatch (resolver) is cheap; anonymous
   callback dispatch (synthesizer) is medium; **anonymous-arrow handlers are the hard
   remaining gap** (no identity → need synthesizer link-through-body, not yet built).
