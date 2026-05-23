@@ -177,7 +177,7 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
 | TypeScript/JS | Vue / Nuxt | template events (@click→handler); component composition; reactive→render | S + X | ✅ events + composition (vitepress S / vben M / element-plus L); 🔬 reactive→render (vue-core Proxy runtime — frontier, deferred) |
 | TypeScript/JS | Svelte / SvelteKit | template calls/composition; SvelteKit action→api; store→DOM | X | ✅ already strong (realworld S / skeleton M / shadcn L): template `{fn()}` calls, `<Pascal/>` composition, `import * as api` namespace, `load`→api all work out of the box. + exported-const object-of-functions extraction (SvelteKit `actions`). 🔬 `$lib`-namespace-from-action + store/reactive frontier |
 | TypeScript/JS | Express / Koa | request → route → handler → service | R + X | ✅ named handlers + middleware + controller/service (resolver) + **inline arrow handlers → service body calls** (realworld S 19 / parse M / ghost L 65 edges). 🔬 custom routers (payload had 0 routes — not `app.get`-style) |
-| TypeScript/JS | NestJS | request → controller → provider | ? | ⬜ |
+| TypeScript/JS | NestJS | request → @Controller → DI service → repo | R | ✅ already well-covered (realworld S / immich M-L / amplication L): @decorator routes (HTTP/GraphQL/microservice/WS) via resolver + DI `this.svc.method()` controller→service resolves correctly at scale (name + co-location). No dynamic-dispatch hole. 🔬 committed `dist/` build output gets indexed (realworld) — general build-dir-ignore follow-up |
 | TypeScript/JS | RxJS / signals | subscribe → operator → observer | S | ⬜ |
 | Python | Django ORM | QuerySet → SQL compiler | R | ✅ |
 | Python | Django (views/signals) | url → view; signal → receiver | R/S | 🔬 (routes done; signals ⬜) |
@@ -247,6 +247,16 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
   Ghost's layered custom-API architecture makes both arms thrash. Residual: **custom routers** — payload's
   6.4k-file codebase had 0 routes (its router abstraction isn't `app.get`-style, so undetected). Lesson
   inverse of Svelte: Express's dominant pattern WAS the uncovered one, so it needed real work like Vue.
+- **NestJS (validated 2026-05-23, realworld S / immich M-L / amplication L) — already well-covered.** The
+  `nestjs` resolver handles @decorator routes (HTTP/GraphQL/microservice/WS). DI controller→service
+  (`this.svc.method()`) resolves correctly **even at scale** — every immich controller→service edge hit the
+  right same-module service (`addUsersToAlbum→addUsers`, `getMyApiKey→getMine`, `copyAsset→copy`) via
+  name + co-location, no type_of edge needed. Agent A/B (immich album flow): codegraph **eliminated Grep
+  (0 vs 3)** tracing route→controller→service. No dynamic-dispatch hole. One GENERAL hygiene gap surfaced
+  (not NestJS-specific): the realworld example **commits its `dist/`** build output, which codegraph indexes
+  (246 dup nodes) because the file walk only respects `.gitignore` with no default build-dir ignore. Real
+  apps (immich/amplication) gitignore `dist/` (0 dup nodes), so it's narrow — a default ignore for
+  `dist/build/out/.next/coverage` is a clean follow-up, deferred (core-indexer change, the user's call).
 - **Difficulty gradient is real:** named-ref dispatch (resolver) is cheap; anonymous
   callback dispatch (synthesizer) is medium; **anonymous-arrow handlers are the hard
   remaining gap** (no identity → need synthesizer link-through-body, not yet built).
