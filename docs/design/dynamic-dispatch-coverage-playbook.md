@@ -180,7 +180,7 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
 | TypeScript/JS | NestJS | request → @Controller → DI service → repo | R | ✅ already well-covered (realworld S / immich M-L / amplication L): @decorator routes (HTTP/GraphQL/microservice/WS) via resolver + DI `this.svc.method()` controller→service resolves correctly at scale (name + co-location). No dynamic-dispatch hole. 🔬 committed `dist/` build output gets indexed (realworld) — general build-dir-ignore follow-up |
 | TypeScript/JS | RxJS / signals | subscribe → operator → observer | S | ⬜ |
 | Python | Django ORM | QuerySet → SQL compiler | R | ✅ |
-| Python | Django (views/signals) | url → view; signal → receiver | R/S | 🔬 (routes done; signals ⬜) |
+| Python | Django / DRF (views) | url → view → model | R + X | ✅ url→view (`path`/`url`/`as_view`) + **DRF `router.register`→ViewSet** (realworld S / wagtail M / saleor L); ORM QuerySet→SQL (prior work). 🔬 signals (`post_save`→receiver), DRF viewset CRUD actions (inherited), saleor GraphQL resolvers |
 | Python | Flask / FastAPI | request → route → dependency | R | 🔬 (routes done) |
 | Go | Gin / net/http | request → handler chain | ? | ⬜ |
 | Rust | Axum / Cargo workspace | request → handler; trait dispatch | R | 🔬 (workspaces done) |
@@ -280,6 +280,17 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
   **A first cut regressed mall 292→1** by dropping `@RequestMapping`-on-method — *caught by the cross-repo
   route-count check*; the playbook's regression guard earns its keep. Residuals: halo's custom patterns
   (9/29 resolve); Spring Data JPA derived queries (metaprogramming frontier).
+- **Django / DRF (validated 2026-05-23, realworld S / wagtail M / saleor L) — mostly covered + a DRF-router
+  fix.** The ORM (`_iterable_class`→ModelIterable, the original investigation) and URL routing
+  (`path`/`url`/`as_view`→view) were already done. The one hole: **DRF `router.register(r'articles',
+  ArticleViewSet)`** (the core CRUD endpoints) wasn't extracted — only `path()`/`url()` were. Fix
+  (`frameworks/python.ts`): match `router.register` (the STRING first arg separates it from
+  `admin.register(Model, Admin)`, whose first arg is a model class) → route→ViewSet class. Narrow in this
+  corpus (realworld has 1 router; wagtail uses `path()`, saleor is GraphQL) but real for DRF-router APIs.
+  Agent A/B (wagtail Page flow, medium): codegraph **4–7 reads / 1–4 grep / 58–81s** vs without **7–9 reads
+  / 6 grep / 82–86s** — fewer reads, fewer greps, faster. No regression (wagtail/saleor route counts
+  unchanged — purely additive). Residuals: signals (`post_save`→receiver), DRF viewset CRUD actions
+  (inherited from the base class, not in the user's ViewSet), saleor's GraphQL resolvers.
 - **Difficulty gradient is real:** named-ref dispatch (resolver) is cheap; anonymous
   callback dispatch (synthesizer) is medium; **anonymous-arrow handlers are the hard
   remaining gap** (no identity → need synthesizer link-through-body, not yet built).

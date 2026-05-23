@@ -102,6 +102,34 @@ export const djangoResolver: FrameworkResolver = {
       }
     }
 
+    // DRF router registration: `router.register(r'articles', ArticleViewSet)` →
+    // route → the ViewSet class (the core CRUD endpoints, which path()/url() miss).
+    // The STRING first arg separates this from `admin.site.register(Model, Admin)`
+    // (whose first arg is a model class, not a string); the View/ViewSet suffix on
+    // the 2nd arg keeps it to DRF viewsets.
+    const routerRegex = /\.register\s*\(\s*r?['"]([^'"]+)['"]\s*,\s*([\w.]+)/g;
+    while ((match = routerRegex.exec(safe)) !== null) {
+      const prefix = match[1]!.replace(/^\^|\/?\$$/g, '');
+      const viewset = match[2]!.split('.').pop()!;
+      if (!/View(Set)?$/.test(viewset)) continue;
+      const line = safe.slice(0, match.index).split('\n').length;
+      const routeNode: Node = {
+        id: `route:${filePath}:${line}:VIEWSET:${prefix}`,
+        kind: 'route',
+        name: `VIEWSET /${prefix}`,
+        qualifiedName: `${filePath}::route:${prefix}`,
+        filePath, startLine: line, endLine: line, startColumn: 0, endColumn: match[0].length,
+        language: 'python', updatedAt: now,
+      };
+      nodes.push(routeNode);
+      references.push({
+        fromNodeId: routeNode.id,
+        referenceName: viewset,
+        referenceKind: 'references',
+        line, column: 0, filePath, language: 'python',
+      });
+    }
+
     return { nodes, references };
   },
 };
