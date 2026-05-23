@@ -184,7 +184,7 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
 | Python | Flask / FastAPI | request → route → dependency | R | 🔬 (routes done) |
 | Go | Gin / net/http | request → handler chain | ? | ⬜ |
 | Rust | Axum / Cargo workspace | request → handler; trait dispatch | R | 🔬 (workspaces done) |
-| Java | Spring | request → @Controller → service; DI | ? | ⬜ |
+| Java | Spring | request → @RestController → @Autowired service → repo | R + X | ✅ **bare `@GetMapping`/`@PostMapping` + class `@RequestMapping` prefix join → route→method** (realworld S / mall M / halo L) — was missing all path-less method mappings; DI controller→service resolves (name + dir). 🔬 Spring Data JPA derived queries (`findByEmail`) — metaprogramming frontier |
 | Kotlin | (coroutines / DI) | flow/callback dispatch | ? | ⬜ |
 | Swift | Vapor | request → route → controller | ? | ⬜ |
 | C# | ASP.NET | request → controller; DI | ? | ⬜ |
@@ -269,6 +269,17 @@ Status legend: ✅ done+validated · 🔬 hole identified · ⬜ not started.
   dropped it before `resolve()` ran — needed the same claim hook as the django ORM work. Residuals: **Rails
   Engine routing** (spree still 0 — it mounts an engine, not `config/routes.rb` resources); ActiveRecord
   dynamic finders (`Article.find_by_slug` — metaprogramming frontier).
+- **Spring (validated 2026-05-23, realworld S / mall M / halo L) — bare-mapping + class-prefix routing fix.**
+  The resolver required a string path in the mapping regex, so BARE method mappings (`@PostMapping` with the
+  path on the class `@RequestMapping`) — the dominant multi-method-controller pattern — were missed (halo
+  had 28 routes for 2444 files; realworld's 2-action favorite controller linked only one). Fix
+  (`frameworks/java.ts`): treat class `@RequestMapping` as a PREFIX (joined, not a bogus route); match
+  verb-specific mappings BARE-or-with-path; also handle method-level `@RequestMapping(method=...)` (older
+  style). realworld 13→19, mall →246 precise route→method (class prefix joined); DI controller→service
+  resolves (`article→findBySlug`). Agent A/B (mall cart flow): with codegraph 0 reads/0 grep vs without 2/2.
+  **A first cut regressed mall 292→1** by dropping `@RequestMapping`-on-method — *caught by the cross-repo
+  route-count check*; the playbook's regression guard earns its keep. Residuals: halo's custom patterns
+  (9/29 resolve); Spring Data JPA derived queries (metaprogramming frontier).
 - **Difficulty gradient is real:** named-ref dispatch (resolver) is cheap; anonymous
   callback dispatch (synthesizer) is medium; **anonymous-arrow handlers are the hard
   remaining gap** (no identity → need synthesizer link-through-body, not yet built).
