@@ -1102,6 +1102,21 @@ export class ToolHandler {
         registeredAt,
       };
     }
+    if (m?.synthesizedBy === 'react-render') {
+      return {
+        label: `React re-render — \`setState\` re-runs render() (dynamic dispatch)`,
+        compact: `dynamic: React re-render via setState${at}`,
+        registeredAt,
+      };
+    }
+    if (m?.synthesizedBy === 'jsx-render') {
+      const child = m.via ? `<${String(m.via)}>` : 'a child component';
+      return {
+        label: `renders ${child} (JSX child — dynamic dispatch)`,
+        compact: `dynamic: renders ${child}`,
+        registeredAt,
+      };
+    }
     return null;
   }
 

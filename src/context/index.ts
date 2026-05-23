@@ -344,6 +344,10 @@ export class ContextBuilder {
       const at = typeof m.registeredAt === 'string' ? ` @${m.registeredAt}` : '';
       const label = m.synthesizedBy === 'callback'
         ? `callback via ${m.via ? `\`${String(m.via)}\`` : 'registrar'}${at}`
+        : m.synthesizedBy === 'react-render'
+        ? `React re-render via setState${at}`
+        : m.synthesizedBy === 'jsx-render'
+        ? `renders <${String(m.via || 'child')}>`
         : `event ${m.event ? `\`${String(m.event)}\`` : ''}${at}`;
       synthByPair.set(`${e.source}>${e.target}`, label);
     }

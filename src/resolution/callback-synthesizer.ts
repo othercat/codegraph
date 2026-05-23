@@ -32,6 +32,9 @@ const EVENT_FANOUT_CAP = 6; // skip events with more handlers/dispatchers than t
 
 const ON_RE = /\.(?:on|once|addListener)\(\s*['"]([^'"]+)['"]\s*,\s*(?:function\s+(\w+)|(?:this\.)?(\w+))/g;
 const EMIT_RE = /\.(?:emit|fire|dispatchEvent)\(\s*['"]([^'"]+)['"]/g;
+const SETSTATE_RE = /this\.setState\s*\(/;
+const JSX_TAG_RE = /<([A-Z][A-Za-z0-9_]*)[\s/>]/g;
+const MAX_JSX_CHILDREN = 30;
 
 function sliceLines(content: string, startLine?: number, endLine?: number): string | null {
   if (!startLine || !endLine) return null;
@@ -183,16 +186,106 @@ function eventEmitterEdges(ctx: ResolutionContext): Edge[] {
 }
 
 /**
- * Synthesize dispatcher→callback edges (field observers + EventEmitters).
- * Returns the count added. Never throws into indexing — callers wrap in try/catch.
+ * Phase 4: React class-component re-render. `this.setState(...)` re-runs the
+ * component's `render()`, but that hop is React-internal — no static edge — so a
+ * flow like "mutation → setState → canvas repaint" dead-ends at setState even
+ * though `render → getRenderableElements → …` is fully call-connected after it.
+ * Bridge it: for each class that has a `render` method, link every sibling method
+ * whose body calls `this.setState(` → `render`. The setState gate keeps this to
+ * React class components (a non-React class with a `render` method won't call
+ * `this.setState`). Over-approximation (all setState methods reach render) is
+ * accepted — it's reachability-correct, like the callback channels.
+ */
+function reactRenderEdges(queries: QueryBuilder, ctx: ResolutionContext): Edge[] {
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  for (const cls of queries.getNodesByKind('class')) {
+    const children = queries.getOutgoingEdges(cls.id, ['contains'])
+      .map((e) => queries.getNodeById(e.target))
+      .filter((n): n is Node => !!n && n.kind === 'method');
+    const render = children.find((n) => n.name === 'render');
+    if (!render) continue;
+    let added = 0;
+    for (const m of children) {
+      if (added >= MAX_CALLBACKS_PER_CHANNEL) break;
+      if (m.id === render.id) continue;
+      const content = ctx.readFile(m.filePath);
+      const src = content && sliceLines(content, m.startLine, m.endLine);
+      if (!src || !SETSTATE_RE.test(src)) continue;
+      const key = `${m.id}>${render.id}`;
+      if (seen.has(key)) continue;
+      seen.add(key);
+      edges.push({
+        source: m.id, target: render.id, kind: 'calls', line: m.startLine,
+        provenance: 'heuristic',
+        metadata: { synthesizedBy: 'react-render', via: 'setState', registeredAt: `${render.filePath}:${render.startLine}` },
+      });
+      added++;
+    }
+  }
+  return edges;
+}
+
+/**
+ * Phase 5: React JSX child rendering. A component that returns `<Child .../>`
+ * mounts Child — React calls it — but JSX instantiation isn't a static call edge,
+ * so a render tree (App.render → StaticCanvas → renderStaticScene) breaks at the
+ * JSX hop. Link parent → each capitalized JSX child it renders. File-oriented
+ * (read each JSX file once). Precision gate: the child name must resolve to a
+ * component/function/class node — TS generics like `Array<Foo>` resolve to a type
+ * (or nothing) and are dropped.
+ */
+function reactJsxChildEdges(ctx: ResolutionContext): Edge[] {
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  const PARENT_KINDS = new Set(['method', 'function', 'component']);
+  for (const file of ctx.getAllFiles()) {
+    const content = ctx.readFile(file);
+    if (!content || (!content.includes('</') && !content.includes('/>'))) continue; // JSX-file gate
+    const parents = ctx.getNodesInFile(file).filter((n) => PARENT_KINDS.has(n.kind));
+    for (const parent of parents) {
+      const src = sliceLines(content, parent.startLine, parent.endLine);
+      if (!src || (!src.includes('</') && !src.includes('/>'))) continue;
+      const names = new Set<string>();
+      JSX_TAG_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = JSX_TAG_RE.exec(src))) names.add(m[1]!);
+      let added = 0;
+      for (const name of names) {
+        if (added >= MAX_JSX_CHILDREN) break;
+        const child = ctx.getNodesByName(name).find(
+          (n) => n.kind === 'component' || n.kind === 'function' || n.kind === 'class'
+        );
+        if (!child || child.id === parent.id) continue;
+        const key = `${parent.id}>${child.id}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: parent.id, target: child.id, kind: 'calls', line: parent.startLine,
+          provenance: 'heuristic',
+          metadata: { synthesizedBy: 'jsx-render', via: name },
+        });
+        added++;
+      }
+    }
+  }
+  return edges;
+}
+
+/**
+ * Synthesize dispatcher→callback edges (field observers + EventEmitters +
+ * React re-render + JSX children). Returns the count added. Never throws into
+ * indexing — callers wrap in try/catch.
  */
 export function synthesizeCallbackEdges(queries: QueryBuilder, ctx: ResolutionContext): number {
   const fieldEdges = fieldChannelEdges(queries, ctx);
   const emitterEdges = eventEmitterEdges(ctx);
+  const renderEdges = reactRenderEdges(queries, ctx);
+  const jsxEdges = reactJsxChildEdges(ctx);
 
   const merged: Edge[] = [];
   const seen = new Set<string>();
-  for (const e of [...fieldEdges, ...emitterEdges]) {
+  for (const e of [...fieldEdges, ...emitterEdges, ...renderEdges, ...jsxEdges]) {
     const key = `${e.source}>${e.target}`;
     if (seen.has(key)) continue;
     seen.add(key);
