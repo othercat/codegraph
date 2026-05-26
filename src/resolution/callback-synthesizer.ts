@@ -521,9 +521,159 @@ function vueTemplateEdges(ctx: ResolutionContext): Edge[] {
 }
 
 /**
+ * React Native cross-language event channel (Phase 3 of the mixed-iOS/RN
+ * bridging effort). Same shape as `eventEmitterEdges` but cross-language:
+ *
+ *   Native (ObjC, on RCTEventEmitter subclass):
+ *     [self sendEventWithName:@"locationUpdate" body:@{...}];
+ *
+ *   Native (Java/Kotlin, via the JS module dispatcher):
+ *     emitter.emit("locationUpdate", body);
+ *     reactContext.getJSModule(RCTDeviceEventEmitter.class).emit("locationUpdate", body);
+ *
+ *   JS (subscriber):
+ *     new NativeEventEmitter(NativeModules.Geo).addListener("locationUpdate", handler);
+ *     DeviceEventEmitter.addListener("locationUpdate", handler);
+ *
+ * Synthesize: native dispatch site → JS handler, keyed by the literal
+ * event name. Only matches NAMED handlers (the existing `ON_RE` named-
+ * capture form). Inline arrow handlers like `addListener('x', d => …)`
+ * aren't named at extraction time and would need link-through-body
+ * support; matches the deliberate scope of the in-language synthesizer.
+ *
+ * Provenance `'heuristic'`, synthesizedBy `'rn-event-channel'`.
+ */
+// ObjC's `sendEventWithName:@"X"` shape. We don't need to track the
+// `body:` argument — just the event name.
+const RN_OBJC_SEND_RE = /\bsendEventWithName\s*:\s*@"([^"]+)"/g;
+// JVM-side emitter calls: `emitter.emit("X", body)`. Matches both Java
+// and Kotlin syntax because the call form is identical. Restricted to
+// JVM source files in the consumer so we don't re-process JS emits
+// (which `eventEmitterEdges` already handles).
+const RN_JVM_EMIT_RE = /\.emit\s*\(\s*"([^"]+)"\s*,/g;
+
+function rnEventEdges(ctx: ResolutionContext): Edge[] {
+  // Native dispatchers (source = the native method whose body sends the
+  // event) and JS handlers (target = the function/method registered as
+  // the listener) keyed by event name.
+  const nativeDispatchersByEvent = new Map<string, Set<string>>();
+  const jsHandlersByEvent = new Map<string, Map<string, string>>();
+
+  for (const file of ctx.getAllFiles()) {
+    const content = ctx.readFile(file);
+    if (!content) continue;
+
+    const nodesInFile = ctx.getNodesInFile(file);
+    const lineOf = (idx: number) => content.slice(0, idx).split('\n').length;
+    const addDispatcher = (event: string, line: number) => {
+      const disp = enclosingFn(nodesInFile, line);
+      if (!disp) return;
+      const set = nativeDispatchersByEvent.get(event) ?? new Set<string>();
+      set.add(disp.id);
+      nativeDispatchersByEvent.set(event, set);
+    };
+
+    // ObjC side: `sendEventWithName:@"X"` only fires inside `.m`/`.mm`
+    // files (RCTEventEmitter subclasses).
+    if (file.endsWith('.m') || file.endsWith('.mm')) {
+      RN_OBJC_SEND_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = RN_OBJC_SEND_RE.exec(content))) {
+        if (m[1]) addDispatcher(m[1], lineOf(m.index));
+      }
+    }
+
+    // JVM side: `.emit("X", …)` in Java/Kotlin. (We pattern-match
+    // anywhere in the file; the JS in-language path uses a separate
+    // emitter object pattern and is already handled by eventEmitterEdges.)
+    if (file.endsWith('.java') || file.endsWith('.kt')) {
+      RN_JVM_EMIT_RE.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = RN_JVM_EMIT_RE.exec(content))) {
+        if (m[1]) addDispatcher(m[1], lineOf(m.index));
+      }
+    }
+
+    // JS subscribers (.addListener("X", handler)). Restrict to JS-family
+    // files so a native file's `addListener:` (the ObjC method) doesn't
+    // get mistaken for a JS subscription — they're entirely different
+    // things despite sharing a name.
+    if (
+      file.endsWith('.js') ||
+      file.endsWith('.jsx') ||
+      file.endsWith('.ts') ||
+      file.endsWith('.tsx') ||
+      file.endsWith('.mjs') ||
+      file.endsWith('.cjs')
+    ) {
+      // Match BOTH the named-handler form (`.addListener('x', fn)`) and
+      // an unnamed-handler form (`.addListener('x', listener)` where
+      // `listener` is a parameter — common in RN wrapper APIs like
+      // RNFirebase's `messaging().onMessageReceived(listener)`). For the
+      // unnamed case we attribute the subscription to the ENCLOSING JS
+      // function (the abstraction layer), giving a reachability-correct
+      // hop even when the actual user-side handler lives one call up.
+      const ADDLISTENER_ANY = /\.(?:on|once|addListener)\(\s*['"]([^'"]+)['"]\s*,\s*([A-Za-z_][\w.]*)/g;
+      ADDLISTENER_ANY.lastIndex = 0;
+      let m: RegExpExecArray | null;
+      while ((m = ADDLISTENER_ANY.exec(content))) {
+        const event = m[1];
+        const arg = m[2];
+        if (!event || !arg) continue;
+        const bareName = arg.includes('.') ? arg.slice(arg.lastIndexOf('.') + 1) : arg;
+        // Try a named-symbol match first (matches the in-language semantic).
+        const namedHandler = ctx
+          .getNodesByName(bareName)
+          .find((n) => n.kind === 'function' || n.kind === 'method');
+        let targetId: string | null = namedHandler?.id ?? null;
+        if (!targetId) {
+          // Fall back to the enclosing function — the subscribe-wrapper
+          // pattern means the event fires THROUGH this function on its
+          // way to user code. Reachability-correct attribution.
+          const enclosing = enclosingFn(nodesInFile, lineOf(m.index));
+          targetId = enclosing?.id ?? null;
+        }
+        if (!targetId) continue;
+        const map = jsHandlersByEvent.get(event) ?? new Map<string, string>();
+        map.set(targetId, `${file}:${lineOf(m.index)}`);
+        jsHandlersByEvent.set(event, map);
+      }
+    }
+  }
+
+  const edges: Edge[] = [];
+  const seen = new Set<string>();
+  for (const [event, dispatchers] of nativeDispatchersByEvent) {
+    const handlers = jsHandlersByEvent.get(event);
+    if (!handlers) continue;
+    // Same fan-out guard as the in-language channel: generic event names
+    // (e.g. 'change', 'error', 'data') with many handlers/dispatchers
+    // can't be matched precisely without receiver-type info.
+    if (dispatchers.size > EVENT_FANOUT_CAP || handlers.size > EVENT_FANOUT_CAP) continue;
+    for (const d of dispatchers) {
+      for (const [h, registeredAt] of handlers) {
+        if (d === h) continue;
+        const key = `${d}>${h}`;
+        if (seen.has(key)) continue;
+        seen.add(key);
+        edges.push({
+          source: d,
+          target: h,
+          kind: 'calls',
+          provenance: 'heuristic',
+          metadata: { synthesizedBy: 'rn-event-channel', event, registeredAt },
+        });
+      }
+    }
+  }
+  return edges;
+}
+
+/**
  * Synthesize dispatcher→callback edges (field observers + EventEmitters +
- * React re-render + JSX children + Vue templates). Returns the count added.
- * Never throws into indexing — callers wrap in try/catch.
+ * React re-render + JSX children + Vue templates + RN event channel).
+ * Returns the count added. Never throws into indexing — callers wrap in
+ * try/catch.
  */
 export function synthesizeCallbackEdges(queries: QueryBuilder, ctx: ResolutionContext): number {
   const fieldEdges = fieldChannelEdges(queries, ctx);
@@ -534,10 +684,21 @@ export function synthesizeCallbackEdges(queries: QueryBuilder, ctx: ResolutionCo
   const flutterEdges = flutterBuildEdges(queries, ctx);
   const cppEdges = cppOverrideEdges(queries);
   const ifaceEdges = interfaceOverrideEdges(queries);
+  const rnEventEdgesList = rnEventEdges(ctx);
 
   const merged: Edge[] = [];
   const seen = new Set<string>();
-  for (const e of [...fieldEdges, ...emitterEdges, ...renderEdges, ...jsxEdges, ...vueEdges, ...flutterEdges, ...cppEdges, ...ifaceEdges]) {
+  for (const e of [
+    ...fieldEdges,
+    ...emitterEdges,
+    ...renderEdges,
+    ...jsxEdges,
+    ...vueEdges,
+    ...flutterEdges,
+    ...cppEdges,
+    ...ifaceEdges,
+    ...rnEventEdgesList,
+  ]) {
     const key = `${e.source}>${e.target}`;
     if (seen.has(key)) continue;
     seen.add(key);
