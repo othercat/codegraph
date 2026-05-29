@@ -240,6 +240,22 @@ function exploreLineNumbersEnabled(): boolean {
 }
 
 /**
+ * Adaptive explore sizing (default ON). `codegraph_explore` skeletonizes OFF-SPINE
+ * polymorphic-sibling files — a file whose class is one of ≥3 interchangeable
+ * implementations of a shared interface (e.g. OkHttp's `: Interceptor` classes) —
+ * to class + member signatures (bodies elided), keeping the on-spine exemplar full.
+ * This sizes the response to the answer instead of the budget cap on sibling-heavy
+ * flows (OkHttp interceptor-chain explore 28.5k→16.6k, ~28% cheaper than native
+ * search, reads flat). It is PROVABLY INERT elsewhere: distinct pipeline steps (no
+ * ≥3-implementer supertype, e.g. Excalidraw's `renderStaticScene`) and on-spine
+ * files keep full source — output is byte-identical to shipped on excalidraw /
+ * tokio / django / vscode / gin. Set `CODEGRAPH_ADAPTIVE_EXPLORE=0` to disable.
+ */
+function adaptiveExploreEnabled(): boolean {
+  return process.env.CODEGRAPH_ADAPTIVE_EXPLORE !== '0' && process.env.CODEGRAPH_ADAPTIVE_EXPLORE !== 'false';
+}
+
+/**
  * Prefix each line of a source slice with its 1-based line number, matching
  * the Read tool's `cat -n` convention (number + tab) so the agent treats it
  * the same way it treats Read output.
@@ -1908,7 +1924,8 @@ export class ToolHandler {
    * whose qualifiedName contains another named token (`PmsProductServiceImpl::list`),
    * dropping unrelated `OmsOrderService::list`.
    */
-  private buildFlowFromNamedSymbols(cg: CodeGraph, query: string): string {
+  private buildFlowFromNamedSymbols(cg: CodeGraph, query: string): { text: string; pathNodeIds: Set<string> } {
+    const EMPTY: { text: string; pathNodeIds: Set<string> } = { text: '', pathNodeIds: new Set<string>() };
     try {
       const CALLABLE = new Set(['method', 'function', 'component', 'constructor']);
       // Strip only a REAL file extension (Create.cs → Create); KEEP qualified
@@ -1921,7 +1938,7 @@ export class ToolHandler {
           .map((t) => t.replace(FILE_EXT, '').trim())
           .filter((t) => t.length >= 3 && /^[A-Za-z_$][\w$]*(?:(?:::|\.)[\w$]+)*$/.test(t))
       )].slice(0, 16);
-      if (tokens.length < 2) return '';
+      if (tokens.length < 2) return EMPTY;
       // Pool of name SEGMENTS (Class + method from every token) used to
       // disambiguate an ambiguous SIMPLE name: keep a candidate only if its
       // CONTAINER class is itself named in the query.
@@ -1942,7 +1959,7 @@ export class ToolHandler {
         for (const n of pick.slice(0, 6)) named.set(n.id, n);
         if (named.size > 40) break;
       }
-      if (named.size < 2) return '';
+      if (named.size < 2) return EMPTY;
       const MAX_HOPS = 7;
       let best: Array<{ node: Node; edge: Edge | null }> | null = null;
       // BFS the full call graph (incl. synth edges) from each named seed, but
@@ -1974,7 +1991,7 @@ export class ToolHandler {
         chain.reverse();
         if (!best || chain.length > best.length) best = chain;
       }
-      if (!best || best.length < 3) return '';
+      if (!best || best.length < 3) return EMPTY;
       const out = ['## Flow (call path among the symbols you queried)', ''];
       for (let i = 0; i < best.length; i++) {
         const step = best[i]!;
@@ -1982,9 +1999,9 @@ export class ToolHandler {
         out.push(`${i + 1}. ${step.node.name} (${step.node.filePath}:${step.node.startLine})`);
       }
       out.push('', '> Full source for these symbols is below; codegraph_trace(from,to) for the exact path between two endpoints.', '');
-      return out.join('\n');
+      return { text: out.join('\n'), pathNodeIds: new Set(best.map((s) => s.node.id)) };
     } catch {
-      return '';
+      return EMPTY;
     }
   }
 
@@ -2217,6 +2234,37 @@ export class ToolHandler {
     }
 
     // Step 4: Read contiguous file sections
+    // Compute the flow spine once — used both to prepend the Flow section (below)
+    // and to gate adaptive source sizing: files on the spine get full source,
+    // off-spine peers skeletonize.
+    const flow = this.buildFlowFromNamedSymbols(cg, query);
+
+    // Polymorphic-sibling detector for adaptive sizing. A class that implements/
+    // extends a supertype shared by >= MIN_SIBLINGS classes is one of many
+    // INTERCHANGEABLE implementations (OkHttp's 14 `: Interceptor` classes —
+    // showing one + the rest as signatures is enough), as opposed to a DISTINCT
+    // pipeline step (Excalidraw's `renderStaticScene`, which shares no supertype and
+    // must stay full or the agent loses real content). Only off-spine sibling files
+    // skeletonize; distinct steps and on-spine files keep full source. Cache
+    // supertype→(has ≥N implementers) so this stays a handful of edge queries.
+    const MIN_SIBLINGS = 3;
+    const siblingSuper = new Map<string, boolean>();
+    const isPolymorphicSibling = (nodes: Node[]): boolean => {
+      for (const n of nodes) {
+        for (const e of cg.getOutgoingEdges(n.id)) {
+          if (e.kind !== 'implements' && e.kind !== 'extends') continue;
+          let many = siblingSuper.get(e.target);
+          if (many === undefined) {
+            many = cg.getIncomingEdges(e.target)
+              .filter((x) => x.kind === 'implements' || x.kind === 'extends').length >= MIN_SIBLINGS;
+            siblingSuper.set(e.target, many);
+          }
+          if (many) return true;
+        }
+      }
+      return false;
+    };
+
     lines.push('### Source Code');
     lines.push('');
     lines.push('> The code below is the **verbatim, current on-disk source** of these files — re-read from disk on this call and line-numbered, byte-for-byte identical to what the Read tool returns. It is NOT a summary, outline, or stale cache. Treat each block as a Read you have already performed: do not Read a file shown here.');
@@ -2242,6 +2290,45 @@ export class ToolHandler {
 
       const fileLines = fileContent.split('\n');
       const lang = group.nodes[0]?.language || '';
+
+      // Adaptive sizing (CODEGRAPH_ADAPTIVE_EXPLORE, default on): skeletonize a file
+      // (member signatures, bodies elided) only when it is BOTH off the flow spine
+      // AND a polymorphic sibling — one of many interchangeable impls of a shared
+      // interface (OkHttp's interceptors). The on-spine exemplar + the rest as
+      // signatures convey the chain without N redundant full bodies. DISTINCT
+      // pipeline steps (no shared supertype, e.g. Excalidraw's renderStaticScene)
+      // are NOT siblings, so they keep full source — the lever helps sibling-heavy
+      // flows without starving diffuse ones.
+      if (adaptiveExploreEnabled() && flow.pathNodeIds.size > 0
+          && !group.nodes.some(n => flow.pathNodeIds.has(n.id))
+          && isPolymorphicSibling(group.nodes)) {
+        const syms = group.nodes
+          .filter(n => n.kind !== 'import' && n.kind !== 'export' && n.startLine > 0)
+          .sort((a, b) => a.startLine - b.startLine);
+        const seenLn = new Set<number>();
+        const skel: string[] = [];
+        for (const n of syms) {
+          // node.startLine can point at a decorator/annotation (@Throws, @Override,
+          // @objc), so scan forward a few lines for the line that actually NAMES the
+          // symbol — that's the signature the agent needs from a skeleton.
+          let lineNo = n.startLine;
+          for (let k = 0; k < 4; k++) {
+            if ((fileLines[n.startLine - 1 + k] || '').includes(n.name)) { lineNo = n.startLine + k; break; }
+          }
+          if (seenLn.has(lineNo)) continue;
+          seenLn.add(lineNo);
+          const sig = (fileLines[lineNo - 1] || '').trim();
+          if (sig) skel.push(exploreLineNumbersEnabled() ? `${lineNo}\t${sig}` : sig);
+        }
+        if (skel.length > 0) {
+          const names = [...new Set(group.nodes.filter(n => n.kind !== 'import' && n.kind !== 'export').map(n => n.name))]
+            .slice(0, budget.maxSymbolsInFileHeader).join(', ');
+          lines.push(`#### ${filePath} — ${names} · skeleton (signatures only; Read for a full body)`, '', '```' + lang, skel.join('\n'), '```', '');
+          totalChars += skel.join('\n').length + 120;
+          filesIncluded++;
+          continue;
+        }
+      }
 
       // Whole-small-file rule: if a relevant file is small enough to afford,
       // return it ENTIRELY instead of clustering. Clustering exists to tame
@@ -2542,7 +2629,7 @@ export class ToolHandler {
     // maxOutputChars (observed 30k against a 28k tier cap). A fat explore
     // payload persists in the agent's context and is re-read as cache-input
     // on every subsequent turn, so the overrun is paid many times over.
-    const output = this.buildFlowFromNamedSymbols(cg, query) + lines.join('\n');
+    const output = flow.text + lines.join('\n');
     if (output.length > budget.maxOutputChars) {
       const cut = output.slice(0, budget.maxOutputChars);
       const lastNewline = cut.lastIndexOf('\n');
