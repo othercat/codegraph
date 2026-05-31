@@ -4,7 +4,15 @@
  * Defines the tools exposed by the CodeGraph MCP server.
  */
 
-import CodeGraph, { findNearestCodeGraphRoot } from '../index';
+import type CodeGraph from '../index';
+import { findNearestCodeGraphRoot } from '../directory';
+// Lazy-load the heavy CodeGraph chain off the MCP startup path — see the same
+// helper in engine.ts. ToolHandler must load to answer tools/list (static
+// schemas), but it must NOT drag in sqlite/query layers before the daemon binds;
+// CodeGraph is pulled in only when a tool actually opens a project. require() is
+// sync + cached (CommonJS build).
+const loadCodeGraph = (): typeof import('../index').default =>
+  (require('../index') as typeof import('../index')).default;
 import {
   detectWorktreeIndexMismatch,
   worktreeMismatchWarning,
@@ -841,7 +849,7 @@ export class ToolHandler {
     }
 
     // Open and cache under both paths
-    const cg = CodeGraph.openSync(resolvedRoot);
+    const cg = loadCodeGraph().openSync(resolvedRoot);
     this.projectCache.set(resolvedRoot, cg);
     if (projectPath !== resolvedRoot) {
       this.projectCache.set(projectPath, cg);

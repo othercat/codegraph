@@ -37,8 +37,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { spawn, StdioOptions } from 'child_process';
-import { findNearestCodeGraphRoot } from '../index';
-import { getCodeGraphDir } from '../directory';
+import { findNearestCodeGraphRoot, getCodeGraphDir } from '../directory';
 import { StdioTransport } from './transport';
 import { MCPEngine } from './engine';
 import { MCPSession } from './session';
@@ -82,8 +81,14 @@ const TAKEOVER_RETRY_DELAY_MS = 100;
  * process startup. 60 × 100ms = 6s of headroom for a cold/slow box; on the
  * common path the socket appears within a few rounds.
  */
-const DAEMON_CONNECT_MAX_RETRIES = 60;
-const DAEMON_CONNECT_RETRY_DELAY_MS = 100;
+// Poll finely (25ms) so the proxy attaches the instant the freshly-spawned
+// daemon binds, instead of waiting up to a coarse 100ms after — shaves the
+// cold-start handshake (the window the headless agent races). Same ~6s total
+// give-up budget (240 × 25ms), just finer granularity; socket-connect probes
+// are cheap. Paired with deferring the CodeGraph load (engine.ts) off the bind
+// path, this narrows the "No such tool available" race window.
+const DAEMON_CONNECT_MAX_RETRIES = 240;
+const DAEMON_CONNECT_RETRY_DELAY_MS = 25;
 
 /**
  * Resolve the PPID watchdog poll interval from an env override. A value of
