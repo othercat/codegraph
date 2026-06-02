@@ -457,7 +457,7 @@ export const tools: ToolDefinition[] = [
   },
   {
     name: 'codegraph_node',
-    description: 'SECONDARY (after codegraph_explore): get ONE symbol in full — its location, signature, callers/callees trail, and verbatim body (includeCode=true). When the name is AMBIGUOUS (an overloaded method, or the same method name on different types), it returns EVERY matching definition\'s full body in a single call — so you never need to Read a file to find the specific overload you want. Reach for this when explore trimmed a body you need. Use codegraph_explore for several related symbols or the full flow.',
+    description: 'SECONDARY (after codegraph_explore): get ONE symbol in full — its location, signature, callers/callees trail, and verbatim body (includeCode=true). When the name is AMBIGUOUS (an overloaded method, or the same method name on different types), it returns EVERY matching definition\'s full body in a single call — so you never need to Read a file to find the specific overload you want. For a heavily-overloaded name, pass `file` (and/or `line`) to pin the exact definition — e.g. the `file:line` a trail or another tool already showed you. Reach for this when explore trimmed a body you need. Use codegraph_explore for several related symbols or the full flow.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -469,6 +469,14 @@ export const tools: ToolDefinition[] = [
           type: 'boolean',
           description: 'Include full source code (default: false to minimize context)',
           default: false,
+        },
+        file: {
+          type: 'string',
+          description: 'Optional: disambiguate an overloaded name to the definition in this file (path or basename, e.g. "harness.rs").',
+        },
+        line: {
+          type: 'number',
+          description: 'Optional: disambiguate to the definition at/around this line (use with the file:line a trail showed you).',
         },
         projectPath: projectPathProperty,
       },
@@ -2171,11 +2179,12 @@ export class ToolHandler {
         const omitted = uniqSymbols.length - headerNames.length;
         const wholeHeader = `#### ${filePath} — ${omitted > 0 ? `${headerNames.join(', ')}, +${omitted} more` : headerNames.join(', ')}`;
 
-        if (totalChars + wholeSection.length + 200 > budget.maxOutputChars) {
-          const remaining = budget.maxOutputChars - totalChars - 200;
-          if (remaining < 500) break;
-          wholeSection = wholeSection.slice(0, remaining) + '\n... (trimmed) ...';
+        if (!fileNecessary && totalChars + wholeSection.length + 200 > budget.maxOutputChars) {
+          // Don't slice a whole file mid-method: an incidental file that doesn't
+          // fit is skipped; a necessary one (below) renders in full. Half a file
+          // forces the Read this is meant to prevent.
           anyFileTrimmed = true;
+          continue;
         }
         lines.push(wholeHeader, '', '```' + lang, wholeSection, '```', '');
         totalChars += wholeSection.length + 200;
@@ -2350,7 +2359,6 @@ export class ToolHandler {
       // Emit chosen clusters in source order so the file reads top-to-bottom.
       let fileSection = '';
       const allSymbols: string[] = [];
-      let fileTrimmed = false;
       for (let i = 0; i < clusters.length; i++) {
         if (!chosenIndices.has(i)) continue;
         const cluster = clusters[i]!;
@@ -2360,13 +2368,12 @@ export class ToolHandler {
         allSymbols.push(...cluster.symbols);
       }
 
-      // If a single chosen cluster is still oversize (long monolithic
-      // function), tail-trim it. Better one trimmed view than nothing.
-      if (fileSection.length > budget.maxCharsPerFile) {
-        fileSection = fileSection.slice(0, budget.maxCharsPerFile) + '\n... (trimmed) ...';
-        fileTrimmed = true;
-      }
-      if (chosenIndices.size < clusters.length || fileTrimmed) {
+      // A chosen cluster is a COMPLETE method-range — we never cut through a body.
+      // An oversize single cluster (a long monolithic function) renders in FULL:
+      // half a method is useless (the agent just Reads the rest for the other half),
+      // which is the very fallback explore exists to prevent. A pathological file is
+      // bounded by the per-file cluster SELECTION above + the total hard ceiling.
+      if (chosenIndices.size < clusters.length) {
         anyFileTrimmed = true;
       }
 
@@ -2400,10 +2407,11 @@ export class ToolHandler {
       // (DataRequest/Validation) all render, instead of the cap dropping whichever
       // phase the file order happened to put last.
       if (!fileNecessary && totalChars + fileSection.length + 200 > budget.maxOutputChars) {
-        const remaining = budget.maxOutputChars - totalChars - 200;
-        if (remaining < 500) continue; // incidental file, no room — skip it, keep scanning for necessary ones
-        fileSection = fileSection.slice(0, remaining) + '\n... (trimmed) ...';
+        // Incidental file that doesn't fit: SKIP it whole — never slice mid-method.
+        // Keep scanning for necessary files (which bypass this cap and render in
+        // full, bounded by the hard ceiling).
         anyFileTrimmed = true;
+        continue;
       }
 
       lines.push(fileHeader);
@@ -2481,9 +2489,15 @@ export class ToolHandler {
     const output = flow.text + lines.join('\n');
     const hardCeiling = Math.round(budget.maxOutputChars * 1.5);
     if (output.length > hardCeiling) {
+      // Cut at a FILE-SECTION boundary (the last `#### ` header before the
+      // ceiling) so we drop whole trailing file-sections rather than slicing
+      // through a method body — a half-rendered method just forces the Read this
+      // tool exists to prevent. Fall back to a line boundary only if no section
+      // header sits in the back half (degenerate single-giant-section case).
       const cut = output.slice(0, hardCeiling);
-      const lastNewline = cut.lastIndexOf('\n');
-      const safe = lastNewline > hardCeiling * 0.8 ? cut.slice(0, lastNewline) : cut;
+      const lastSection = cut.lastIndexOf('\n#### ');
+      const boundary = lastSection > hardCeiling * 0.5 ? lastSection : cut.lastIndexOf('\n');
+      const safe = boundary > 0 ? cut.slice(0, boundary) : cut;
       return this.textResult(safe + '\n\n... (output truncated to budget; the source above is complete and verbatim — treat it as already Read. For any area not covered, run another codegraph_explore with the specific names — do NOT Read these files.)');
     }
     return this.textResult(output);
@@ -2499,10 +2513,35 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     // Default to false to minimize context usage
     const includeCode = args.includeCode === true;
+    const fileHint = typeof args.file === 'string' && args.file.trim() ? args.file.trim() : undefined;
+    const lineHint = typeof args.line === 'number' && args.line > 0 ? args.line : undefined;
 
-    const matches = this.findSymbolMatches(cg, symbol);
+    let matches = this.findSymbolMatches(cg, symbol);
     if (matches.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
+    }
+
+    // Disambiguate a heavily-overloaded name to a specific definition the caller
+    // pinned by file/line (the `file:line` a trail or another tool showed it) —
+    // so it can fetch e.g. `Harness::poll` at harness.rs:153 out of 50+ `poll`s
+    // instead of Reading. file matches by path suffix/substring; line prefers the
+    // def whose body contains it, else the nearest start. Only narrows (never
+    // empties — if a hint matches nothing it's ignored).
+    if (matches.length > 1 && (fileHint || lineHint !== undefined)) {
+      const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
+      let narrowed = matches;
+      if (fileHint) {
+        const fh = norm(fileHint);
+        const byFile = narrowed.filter((n) => norm(n.filePath).endsWith(fh) || norm(n.filePath).includes(fh));
+        if (byFile.length > 0) narrowed = byFile;
+      }
+      if (lineHint !== undefined && narrowed.length > 1) {
+        const containing = narrowed.filter((n) => n.startLine <= lineHint && (n.endLine ?? n.startLine) >= lineHint);
+        narrowed = containing.length > 0
+          ? containing
+          : [...narrowed].sort((a, b) => Math.abs(a.startLine - lineHint) - Math.abs(b.startLine - lineHint)).slice(0, 1);
+      }
+      if (narrowed.length > 0) matches = narrowed;
     }
 
     // Single definition — the common case.
@@ -2554,7 +2593,18 @@ export class ToolHandler {
       rendered.join('\n\n---\n\n'),
     ];
     if (listed.length) {
-      out.push('', '### Other definitions', ...listed.map((n) => `- \`${n.name}\` (${n.kind}) — ${n.filePath}:${n.startLine}`));
+      const LIST_CAP = 20;
+      const shownList = listed.slice(0, LIST_CAP);
+      out.push(
+        '',
+        '### Other definitions',
+        ...shownList.map((n) => `- \`${n.name}\` (${n.kind}) — ${n.filePath}:${n.startLine}`),
+      );
+      if (listed.length > LIST_CAP) out.push(`- … +${listed.length - LIST_CAP} more`);
+      out.push(
+        '',
+        `> Need one of these in full? Call codegraph_node again with \`file\` (e.g. \`"${listed[0]!.filePath.split('/').pop()}"\`) or \`line\` — do NOT Read it.`,
+      );
     }
     return this.textResult(this.truncateOutput(out.join('\n')));
   }
@@ -2978,10 +3028,26 @@ export class ToolHandler {
    * bare name with no exact match falls back to the single top fuzzy result.
    */
   private findSymbolMatches(cg: CodeGraph, symbol: string): Node[] {
-    // Higher limit for qualified lookups (e.g., "Session.request") — the target
-    // may rank lower in FTS amid many partial matches across qualifier parts.
     const isQualified = /[.\/]|::/.test(symbol);
-    const limit = isQualified ? 50 : 10;
+
+    // For a bare name, enumerate EVERY exact-name definition via the direct index
+    // (not FTS, which caps + ranks): tokio's `poll` has 50+ defs and the one the
+    // caller wants (`Harness::poll` at harness.rs:153) ranks below any search cut,
+    // so it could be neither rendered nor pinned by the file/line disambiguator —
+    // and the agent Read it. With the full set, the multi-overload render + the
+    // file/line filter can both reach it.
+    if (!isQualified) {
+      const exact = cg.getNodesByName(symbol);
+      if (exact.length > 0) {
+        return [...exact].sort((a, b) => (isGeneratedFile(a.filePath) ? 1 : 0) - (isGeneratedFile(b.filePath) ? 1 : 0));
+      }
+      // No exact match — use the single top fuzzy result (e.g. a file basename).
+      const fuzzy = cg.searchNodes(symbol, { limit: 10 });
+      return fuzzy[0] ? [fuzzy[0].node] : [];
+    }
+
+    // Qualified lookup (`Session.request`, `stage_apply::run`): FTS + matchesSymbol.
+    const limit = 50;
     let results = cg.searchNodes(symbol, { limit });
 
     // FTS strips colons, so `stage_apply::run` searches the literal

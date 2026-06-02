@@ -682,6 +682,15 @@ export class CodeGraph {
   }
 
   /**
+   * Get ALL nodes with an exact name (direct index lookup, not FTS-ranked/capped).
+   * Used to enumerate every overload of a heavily-overloaded name so the specific
+   * definition the caller wants is never dropped below a search cut.
+   */
+  getNodesByName(name: string): Node[] {
+    return this.queries.getNodesByName(name);
+  }
+
+  /**
    * Search nodes by text
    */
   searchNodes(query: string, options?: SearchOptions): SearchResult[] {
