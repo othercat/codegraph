@@ -45,12 +45,13 @@
 - [x] 验证本地 `codegraph status` 可用：索引 up to date，backend 为 `better-sqlite3 - native (full WAL + FTS5)`
 - [x] 注册 Codex 全局 CodeGraph MCP：`~/.codex/config.toml` 已包含 `[mcp_servers.codegraph]`
 - [x] 安装 GitHub CLI v2.93.0：`~/.local/gh/bin/gh.exe`，并加入 User PATH
+- [x] GitHub CLI 登录验证通过：`gh auth status` 显示已登录 `othercat`
 - [x] 更新 `~/.codex/AGENTS.md`：启动时先 `codegraph status --json .`，已有索引只按需 `sync`，未初始化才 `init`
 - [x] 更新 `docs/permanent-capability-template.md` 和 `docs/setup-guide.md`：移除默认 `init + index` 重建式流程
 - [x] 验证：`git diff --check` 无 whitespace error，`npm run build` 成功
+- [x] 提交并推送未跟踪内容：项目级 `AGENTS.md` 和 `.agents/` 技能目录
 - [ ] 验证下次 session 是否自动先读 `.ai/`
 - [ ] 重启 Codex agent 后验证 `codegraph_*` MCP 工具是否出现在工具列表
-- [ ] GitHub CLI 登录：`gh auth status` 当前显示未登录，PR/gh API 操作前需要 `gh auth login`
 - [x] 本地提交并推送本次修正：`docs: add Codex on-demand CodeGraph indexing`
 
 ## 关键文件

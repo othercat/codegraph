@@ -288,3 +288,40 @@ A  docs/setup-guide.md
 - `npm run build` ✅：tsc + copy-assets 成功。
 - `git commit` ✅：创建本地提交 `docs: add Codex on-demand CodeGraph indexing`。
 - `git push origin main` ✅：重试后成功推送 `main -> main`。注意：`gh auth status` 仍显示尚未登录；普通 git push 已可用，但 PR/gh API 操作仍需要用户运行 `gh auth login`。
+
+---
+
+## 2026-06-04 提交未跟踪 Codex 指南和技能
+
+### 用户需求
+
+> 我 gh auth login 也认证通过了，顺便把工作区未跟踪的内容这次也提交推送远程仓库。
+
+### 过程记录
+
+1. 按 Repo Map First 流程读取 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/codex_rules.md`、`.ai/token_saving_rules.md`、`.ai/task_log.md`，并执行 `codegraph status --json`。
+2. `gh auth status` 确认已登录 `othercat`，GitHub CLI token scope 包含 `repo` 和 `workflow`。
+3. `git status -sb` 显示仅有未跟踪内容：`AGENTS.md` 和 `.agents/`。
+4. 检查 `.agents/` 内容：包含 `add-lang` 和 `agent-eval` 两个技能，以及 `agent-eval/corpus.json`。
+5. 对未跟踪文件做敏感信息模式检查；只命中文档中的普通说明词，没有实际 secret/token。
+6. 验证 `agent-eval/corpus.json` 可被 JSON.parse 解析。
+7. 运行 `npm run build`，构建成功。
+8. 提交并推送未跟踪内容到 `origin/main`。
+
+### 提交文件
+
+| 文件 | 说明 |
+|------|------|
+| `AGENTS.md` | 项目级 Codex 指南 |
+| `.agents/skills/add-lang/SKILL.md` | 添加新语言支持的本地技能 |
+| `.agents/skills/agent-eval/SKILL.md` | CodeGraph agent retrieval 评测技能 |
+| `.agents/skills/agent-eval/corpus.json` | agent-eval 评测语料 |
+
+### 验证结果
+
+- `gh auth status` ✅：已登录 `othercat`。
+- `codegraph status --json` ✅：initialized=true，pendingChanges added/modified/removed 均为 0。
+- `node -e JSON.parse(...)` ✅：`corpus.json` 合法。
+- `git diff --check -- AGENTS.md .agents` ✅：无 whitespace error。
+- `npm run build` ✅：tsc + copy-assets 成功。
+- `git push origin main` ✅：未跟踪内容提交后成功推送到远程 `main`。
