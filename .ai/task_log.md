@@ -129,3 +129,81 @@ M __tests__/node-sqlite-backend.test.ts
 M __tests__/resolution.test.ts
 M __tests__/sqlite-backend.test.ts
 ```
+
+---
+
+## 2026-06-04 创建通用永久能力模板（给 Codex / 其他项目复用）
+
+### 用户需求
+
+> 我如果要在 Codex 或者 CC 其他项目用这个项目的能力，要怎么用？最好是形成一个 MD 文件我给 Codex 和 CC 的项目读取。最好也要让 Codex 形成永久能力。
+
+### 完成内容
+
+1. **创建 `docs/permanent-capability-template.md`** — 完整通用模板，包含：
+   - 快速开始（Claude Code / Codex 双平台）
+   - 项目初始化流程
+   - 强制工作流程（开工九步）
+   - Token 节省红线
+   - 各平台文件位置对照表（Claude Code / Codex / Cursor / OpenCode）
+   - 给 Codex 的永久提示词（AGENTS.md 格式）
+   - 给 Claude Code 的永久提示词（CLAUDE.md 格式）
+   - 任务类型策略速查表
+   - 项目启动指令模板
+   - 每次任务指令模板
+   - .gitignore 建议
+
+2. **创建 `docs/setup-guide.md`** — 新项目部署指南，包含：
+   - 方案一：全自动部署（脚本，推荐）
+   - 方案二：手动复制（适合自定义）
+   - 方案三：只给 AI 发指令（最快但不持久）
+   - 各平台配置速查（Claude Code / Codex / Cursor / OpenCode）
+   - 验证是否生效的方法
+   - FAQ
+
+3. **创建 `~/.codex/AGENTS.md`** — Codex 全局永久规则，包含开工九步 + Token 红线 + 任务模板。Codex 每次启动都会读取。
+
+4. **创建 `.ai/codex_rules.md`** — CodeGraph 项目的 Codex 专用规则（与 `claude_rules.md` 对应）。
+
+5. **注册全局 memory** — `permanent-capability-template.md` 记录模板文件位置和使用方式。
+
+### 新增文件
+
+| 文件 | 说明 |
+|------|------|
+| `docs/permanent-capability-template.md` | 完整通用模板（~350 行） |
+| `docs/setup-guide.md` | 新项目部署指南 |
+| `.ai/codex_rules.md` | CodeGraph 项目的 Codex 规则 |
+| `~/.codex/AGENTS.md` | Codex 全局永久提示词 |
+| `~/.claude/projects/.../memory/permanent-capability-template.md` | 全局 memory |
+
+### 重要修正（用户反馈）
+
+**问题**：模板中所有安装指令都指向官方 npm 包 / GitHub 原始链接，但 Windows 上官方包缺少 FTS5 支持，必须使用本地 fork 的源码。
+
+**修改**：
+1. `docs/permanent-capability-template.md`：Claude Code / Codex 安装指令全部改为本地源码构建（`npm run build` + `npm link`），使用 `<workspace_root>/KnowledgeRoots/colbymchenry/codegraph` 路径。
+2. `docs/setup-guide.md`：
+   - 添加"前置条件"章节（先构建本地 CodeGraph）
+   - 方案一：去掉 raw.githubusercontent.com 下载，改为本地脚本路径
+   - 方案二 Step 3：去掉 `npm install -g @colbymchenry/codegraph`
+   - 新增 FAQ：解释为什么不能用官方 npm 包
+   - 新增 FAQ：换机器时 Workspace 路径不一样怎么办
+3. `~/.codex/AGENTS.md`：安装指令改为本地源码构建，添加 better-sqlite3 fallback 说明。
+
+### 全局配置状态
+
+| 平台 | 文件 | 状态 |
+|------|------|------|
+| Claude Code | `~/.claude/CLAUDE.md` | ✅ 已有开工九步 |
+| Codex | `~/.codex/AGENTS.md` | ✅ 本次新建 |
+
+### 待提交
+
+```
+M  .ai/handover.md
+M  .ai/task_log.md
+A  .ai/codex_rules.md
+A  docs/permanent-capability-template.md
+A  docs/setup-guide.md
+```

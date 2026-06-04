@@ -36,9 +36,12 @@
 
 ## 未完成
 
-- [ ] 用户手动提交 git commit（全局规则禁止 AI 自动提交）
+- [x] 用户手动提交 git commit（c9f3471，已推送）
+- [x] 创建通用永久能力模板（docs/permanent-capability-template.md + setup-guide.md）
+- [x] 注册 Codex 全局永久能力（~/.codex/AGENTS.md）
+- [x] **修正**：所有安装指令改为本地 fork 源码（`npm run build` + `npm link`），不再指向官方 npm 包 / 原始链接
 - [ ] 验证下次 session 是否自动先读 `.ai/`
-- [ ] `codegraph sync`（当前有 modified 文件，可等下次任务前再 sync）
+- [ ] 构建并提交本次修正
 
 ## 关键文件
 
