@@ -744,9 +744,11 @@ program
       console.log(`  Nodes:     ${formatNumber(stats.nodeCount)}`);
       console.log(`  Edges:     ${formatNumber(stats.edgeCount)}`);
       console.log(`  DB Size:   ${(stats.dbSizeBytes / 1024 / 1024).toFixed(2)} MB`);
-      // Surface the active SQLite backend (node:sqlite — Node's built-in real
-      // SQLite, full WAL + FTS5, no native build).
-      const backendLabel = chalk.green(`node:sqlite ${getGlyphs().dash} built-in (full WAL)`);
+      // Surface the active SQLite backend (node:sqlite when available,
+      // better-sqlite3 fallback on platforms where the bundled SQLite lacks FTS5).
+      const backendLabel = backend === 'better-sqlite3'
+        ? chalk.green(`better-sqlite3 ${getGlyphs().dash} native (full WAL + FTS5)`)
+        : chalk.green(`node:sqlite ${getGlyphs().dash} built-in (full WAL)`);
       console.log(`  Backend:   ${backendLabel}`);
       // Effective journal mode: 'wal' means concurrent reads never block on a
       // writer; anything else means they can ("database is locked"). node:sqlite

@@ -33,10 +33,11 @@ export interface SqliteDatabase {
 }
 
 /**
- * The active SQLite backend. Only one now (`node:sqlite`); kept as a named type
- * so `codegraph status` and the per-instance reporting have a stable shape.
+ * The active SQLite backend. `node:sqlite` is preferred (no native build),
+ * but falls back to `better-sqlite3` when the bundled SQLite lacks FTS5
+ * (e.g. Node.js 22.x on Windows — see sqlite-adapter.ts comments).
  */
-export type SqliteBackend = 'node-sqlite';
+export type SqliteBackend = 'node-sqlite' | 'better-sqlite3';
 
 /**
  * Wraps Node's built-in `node:sqlite` (`DatabaseSync`) to match the
@@ -128,21 +129,113 @@ class NodeSqliteAdapter implements SqliteDatabase {
 }
 
 /**
- * Create a database connection backed by `node:sqlite`.
+ * Wraps `better-sqlite3` to match the same interface.
+ *
+ * Used as a fallback when `node:sqlite` is missing FTS5 (observed on Node.js
+ * 22.x Windows builds where SQLite is compiled without ENABLE_FTS5).
+ */
+class BetterSqlite3Adapter implements SqliteDatabase {
+  private _db: any;
+  private _open: boolean;
+
+  constructor(dbPath: string, BetterSqlite3: any) {
+    this._db = new BetterSqlite3(dbPath);
+    this._open = true;
+  }
+
+  get open(): boolean {
+    return this._open;
+  }
+
+  prepare(sql: string): SqliteStatement {
+    const stmt = this._db.prepare(sql);
+    return {
+      run(...params: any[]) {
+        const r = stmt.run(...params);
+        return {
+          changes: Number(r?.changes ?? 0),
+          lastInsertRowid: r?.lastInsertRowid ?? 0,
+        };
+      },
+      get(...params: any[]) {
+        return stmt.get(...params);
+      },
+      all(...params: any[]) {
+        return stmt.all(...params);
+      },
+      iterate(...params: any[]) {
+        return stmt.iterate(...params);
+      },
+    };
+  }
+
+  exec(sql: string): void {
+    this._db.exec(sql);
+  }
+
+  pragma(str: string, options?: { simple?: boolean }): any {
+    return this._db.pragma(str, options);
+  }
+
+  transaction<T>(fn: (...args: any[]) => T): (...args: any[]) => T {
+    return this._db.transaction(fn);
+  }
+
+  close(): void {
+    if (this._open) {
+      this._db.close();
+      this._open = false;
+    }
+  }
+}
+
+/**
+ * Detect whether `node:sqlite` supports FTS5 by opening a temporary
+ * in-memory database and attempting to create a virtual FTS5 table.
+ */
+function nodeSqliteSupportsFts5(): boolean {
+  try {
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE VIRTUAL TABLE _fts5_probe USING fts5(content)');
+    db.close();
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+/**
+ * Create a database connection.
+ *
+ * Prefers `node:sqlite` (Node 22.5+, no native build), but falls back to
+ * `better-sqlite3` when the bundled SQLite lacks FTS5 (observed on Windows).
  *
  * Returns the active backend alongside the db so each `DatabaseConnection` can
  * report it per-instance — MCP can open multiple project DBs in one process, so
  * a process-global would race.
  */
 export function createDatabase(dbPath: string): { db: SqliteDatabase; backend: SqliteBackend } {
+  if (nodeSqliteSupportsFts5()) {
+    try {
+      return { db: new NodeSqliteAdapter(dbPath), backend: 'node-sqlite' };
+    } catch (error) {
+      // node:sqlite available but failed to open the real DB — fall through
+    }
+  }
+
+  // Fallback to better-sqlite3
   try {
-    return { db: new NodeSqliteAdapter(dbPath), backend: 'node-sqlite' };
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const BetterSqlite3 = require('better-sqlite3');
+    return { db: new BetterSqlite3Adapter(dbPath, BetterSqlite3), backend: 'better-sqlite3' };
   } catch (error) {
     const msg = error instanceof Error ? error.message : String(error);
     throw new Error(
-      'Failed to open SQLite via the built-in node:sqlite module.\n' +
-      'CodeGraph requires node:sqlite (Node.js 22.5+). Install the self-contained\n' +
-      'CodeGraph release (it bundles a compatible Node), or run on Node 22.5+.\n' +
+      'Failed to open SQLite.\n' +
+      'CodeGraph requires either:\n' +
+      '  - node:sqlite with FTS5 support (Node.js 22.5+ on most platforms), or\n' +
+      '  - better-sqlite3 (npm install better-sqlite3).\n' +
       `Underlying error: ${msg}`
     );
   }

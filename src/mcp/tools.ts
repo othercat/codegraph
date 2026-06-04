@@ -2716,9 +2716,13 @@ export class ToolHandler {
       `**Database size:** ${(stats.dbSizeBytes / 1024 / 1024).toFixed(2)} MB`,
     );
 
-    // Surface the active SQLite backend (node:sqlite, Node's built-in real
-    // SQLite — full WAL + FTS5, no native build).
-    lines.push(`**Backend:** node:sqlite (Node built-in) — full WAL + FTS5`);
+    // Surface the active SQLite backend (node:sqlite preferred, better-sqlite3
+    // fallback on platforms where the bundled SQLite lacks FTS5).
+    const backend = cg.getBackend();
+    const backendText = backend === 'better-sqlite3'
+      ? 'better-sqlite3 (native) — full WAL + FTS5'
+      : 'node:sqlite (Node built-in) — full WAL + FTS5';
+    lines.push(`**Backend:** ${backendText}`);
 
     // Effective journal mode. 'wal' ⇒ concurrent reads never block on a writer;
     // anything else ⇒ they can ("database is locked"). node:sqlite supports WAL

@@ -59,3 +59,8 @@ release/
 
 # Local-only: browser-based tmux session launcher (see tmux-web/README.md)
 tmux-web/
+
+# AI working memory: temporary/session files (core .ai/*.md are committed)
+.ai/tmp/
+.ai/cache/
+.ai/session_*.md
