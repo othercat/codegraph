@@ -287,4 +287,4 @@ A  docs/setup-guide.md
 - `git diff --check` ✅：无 whitespace error（仅 CRLF 提示）。
 - `npm run build` ✅：tsc + copy-assets 成功。
 - `git commit` ✅：创建本地提交 `docs: add Codex on-demand CodeGraph indexing`。
-- `git push origin main` ❌：GitHub HTTPS 凭据无效，远端返回 `Invalid username or token`。`gh auth status` 也显示尚未登录，需要用户运行 `gh auth login` 或修复 git HTTPS/SSH 凭据后再推送。
+- `git push origin main` ✅：重试后成功推送 `main -> main`。注意：`gh auth status` 仍显示尚未登录；普通 git push 已可用，但 PR/gh API 操作仍需要用户运行 `gh auth login`。

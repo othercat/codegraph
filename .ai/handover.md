@@ -51,8 +51,7 @@
 - [ ] 验证下次 session 是否自动先读 `.ai/`
 - [ ] 重启 Codex agent 后验证 `codegraph_*` MCP 工具是否出现在工具列表
 - [ ] GitHub CLI 登录：`gh auth status` 当前显示未登录，PR/gh API 操作前需要 `gh auth login`
-- [x] 本地提交本次修正：`docs: add Codex on-demand CodeGraph indexing`
-- [ ] 推送本次修正：当前被 GitHub HTTPS 凭据阻塞，`git push origin main` 返回 `Invalid username or token`
+- [x] 本地提交并推送本次修正：`docs: add Codex on-demand CodeGraph indexing`
 
 ## 关键文件
 
@@ -82,8 +81,7 @@ CodeGraph 项目本身对自己的 dogfooding 已完成初步建立。`.ai/` 体
 2. 新 session 进入项目后，验证是否自动先读 `.ai/`
 3. 验证 `codegraph_*` MCP 工具是否出现在工具列表；若未出现，先用 CLI fallback：`codegraph status` / `codegraph sync`
 4. 如需使用 gh 创建 PR 或调用 GitHub API，先运行 `gh auth login`
-5. 修复 GitHub 凭据后重新运行 `git push origin main`
-6. 后续任务中继续验证 `.ai/` 体系有效性
+5. 后续任务中继续验证 `.ai/` 体系有效性
 
 ## 已知坑
 
