@@ -1761,6 +1761,7 @@ func main() {
             and src.kind = 'file'
             and src.file_path = 'src/main.cpp'
         `).all() as Array<{ dstKind: string; dstPath: string }>;
+        db.close();
         const resolvedToHeader = rows.find(
           (r) => r.dstKind === 'file' && r.dstPath === 'include/utils.h'
         );
@@ -1771,6 +1772,7 @@ func main() {
         );
         expect(stdlibFile).toBeUndefined();
       } finally {
+        cg?.destroy();
         fs.rmSync(tempProject, { recursive: true, force: true });
       }
     });

@@ -36,8 +36,9 @@
 
 ## 未完成
 
+- [ ] 用户手动提交 git commit（全局规则禁止 AI 自动提交）
 - [ ] 验证下次 session 是否自动先读 `.ai/`
-- [ ] `codegraph sync`（当前有 2 个 modified 文件——本次修改的代码文件，可同步也可等下次任务前再 sync）
+- [ ] `codegraph sync`（当前有 modified 文件，可等下次任务前再 sync）
 
 ## 关键文件
 

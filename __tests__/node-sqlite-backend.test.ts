@@ -1,11 +1,13 @@
 /**
  * node:sqlite backend (issue #238 follow-up).
  *
- * node:sqlite (Node's built-in real SQLite) is now the sole backend. This drives
- * a real index + queries through it, so WAL, FTS5 search, and @named-param
- * writes are all exercised end-to-end.
+ * node:sqlite (Node's built-in real SQLite) is the preferred backend, with
+ * better-sqlite3 fallback when FTS5 is missing. This drives a real index +
+ * queries through whichever backend is active, so WAL, FTS5 search, and
+ * @named-param writes are all exercised end-to-end.
  *
- * Skipped on Node < 22.5 where node:sqlite doesn't exist.
+ * Skipped on Node < 22.5 where node:sqlite doesn't exist, or when neither
+ * node:sqlite with FTS5 nor better-sqlite3 is available.
  */
 
 import { describe, it, expect, beforeAll, afterAll } from 'vitest';
@@ -14,16 +16,33 @@ import * as path from 'path';
 import * as os from 'os';
 import CodeGraph from '../src';
 
-let nodeSqliteAvailable = false;
-try {
-  // eslint-disable-next-line @typescript-eslint/no-require-imports
-  require('node:sqlite');
-  nodeSqliteAvailable = true;
-} catch {
-  nodeSqliteAvailable = false;
+function nodeSqliteSupportsFts5(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    const { DatabaseSync } = require('node:sqlite');
+    const db = new DatabaseSync(':memory:');
+    db.exec('CREATE VIRTUAL TABLE _fts5_probe USING fts5(content)');
+    db.close();
+    return true;
+  } catch {
+    return false;
+  }
 }
 
-describe.skipIf(!nodeSqliteAvailable)('node:sqlite backend — real index + queries', () => {
+function betterSqlite3Available(): boolean {
+  try {
+    // eslint-disable-next-line @typescript-eslint/no-require-imports
+    require('better-sqlite3');
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+const expectedBackend = nodeSqliteSupportsFts5() ? 'node-sqlite' : 'better-sqlite3';
+const backendAvailable = nodeSqliteSupportsFts5() || betterSqlite3Available();
+
+describe.skipIf(!backendAvailable)('active sqlite backend — real index + queries', () => {
   let dir: string;
   let cg: CodeGraph;
 
@@ -42,8 +61,8 @@ describe.skipIf(!nodeSqliteAvailable)('node:sqlite backend — real index + quer
     fs.rmSync(dir, { recursive: true, force: true });
   });
 
-  it('uses the node:sqlite backend', () => {
-    expect(cg.getBackend()).toBe('node-sqlite');
+  it('uses the expected backend', () => {
+    expect(cg.getBackend()).toBe(expectedBackend);
   });
 
   it('runs in WAL mode — the whole reason it beats the wasm fallback', () => {
