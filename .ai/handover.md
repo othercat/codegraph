@@ -2,7 +2,9 @@
 
 ## 当前目标
 
-已完成的：为 CodeGraph 自身项目建立「代码库地图优先」的永久能力体系。
+已完成的：为 CodeGraph 自身项目建立「代码库地图优先」的永久能力体系，并把 Codex 全局 Repo Map First 规则与 CodeGraph MCP 配置接入到 `~/.codex/`。
+
+当前补充：GitHub CLI 已以便携方式安装到 `~/.local/gh/bin`；Codex 全局规则和仓库模板已改为“按需索引启动守卫”，避免每次进入项目都重建索引。
 
 ## 已完成
 
@@ -40,8 +42,17 @@
 - [x] 创建通用永久能力模板（docs/permanent-capability-template.md + setup-guide.md）
 - [x] 注册 Codex 全局永久能力（~/.codex/AGENTS.md）
 - [x] **修正**：所有安装指令改为本地 fork 源码（`npm run build` + `npm link`），不再指向官方 npm 包 / 原始链接
+- [x] 验证本地 `codegraph status` 可用：索引 up to date，backend 为 `better-sqlite3 - native (full WAL + FTS5)`
+- [x] 注册 Codex 全局 CodeGraph MCP：`~/.codex/config.toml` 已包含 `[mcp_servers.codegraph]`
+- [x] 安装 GitHub CLI v2.93.0：`~/.local/gh/bin/gh.exe`，并加入 User PATH
+- [x] 更新 `~/.codex/AGENTS.md`：启动时先 `codegraph status --json .`，已有索引只按需 `sync`，未初始化才 `init`
+- [x] 更新 `docs/permanent-capability-template.md` 和 `docs/setup-guide.md`：移除默认 `init + index` 重建式流程
+- [x] 验证：`git diff --check` 无 whitespace error，`npm run build` 成功
 - [ ] 验证下次 session 是否自动先读 `.ai/`
-- [ ] 构建并提交本次修正
+- [ ] 重启 Codex agent 后验证 `codegraph_*` MCP 工具是否出现在工具列表
+- [ ] GitHub CLI 登录：`gh auth status` 当前显示未登录，PR/gh API 操作前需要 `gh auth login`
+- [x] 本地提交本次修正：`docs: add Codex on-demand CodeGraph indexing`
+- [ ] 推送本次修正：当前被 GitHub HTTPS 凭据阻塞，`git push origin main` 返回 `Invalid username or token`
 
 ## 关键文件
 
@@ -67,9 +78,12 @@ CodeGraph 项目本身对自己的 dogfooding 已完成初步建立。`.ai/` 体
 
 ## 下一步建议
 
-1. 运行 `codegraph status` 确认索引状态
-2. 如有需要执行 `codegraph sync`
-3. 后续任务中验证 `.ai/` 体系有效性
+1. 重启 Codex agent，让 `~/.codex/config.toml` 中的 CodeGraph MCP server 生效
+2. 新 session 进入项目后，验证是否自动先读 `.ai/`
+3. 验证 `codegraph_*` MCP 工具是否出现在工具列表；若未出现，先用 CLI fallback：`codegraph status` / `codegraph sync`
+4. 如需使用 gh 创建 PR 或调用 GitHub API，先运行 `gh auth login`
+5. 修复 GitHub 凭据后重新运行 `git push origin main`
+6. 后续任务中继续验证 `.ai/` 体系有效性
 
 ## 已知坑
 

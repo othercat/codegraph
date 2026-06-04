@@ -34,8 +34,9 @@ npm link                                      # 全局链接，让 npx 能找到
 
 # 4. 回到你的项目，接入 Claude Code MCP
 npx codegraph install                         # 写入 ~/.claude/mcp.json
-npx codegraph init .                          # 初始化索引
-npx codegraph index .                         # 索引项目
+npx codegraph status --json . || npx codegraph init .
+# 如果 status 显示 pendingChanges 有新增/修改/删除，再运行：
+npx codegraph sync .
 ```
 
 ### Codex CLI
@@ -69,18 +70,21 @@ unless structural lookup failed and you explain why.
 
 For every task:
 1. Read `.ai/handover.md`, `.ai/repo_map.md`, and `.ai/codex_rules.md` first.
-2. Query the code graph before reading many files.
-3. Produce a candidate file list with reasons.
-4. Read the minimum necessary files.
-5. Explain the evidence chain before patching.
-6. Make the smallest safe patch.
-7. Run the smallest relevant test.
-8. Update `.ai/task_log.md` and `.ai/handover.md`.
+2. Run `codegraph status --json .`; sync existing indexes, and only run
+   `codegraph init .` when the project has no index.
+3. Query the code graph before reading many files.
+4. Produce a candidate file list with reasons.
+5. Read the minimum necessary files.
+6. Explain the evidence chain before patching.
+7. Make the smallest safe patch.
+8. Run the smallest relevant test.
+9. Update `.ai/task_log.md` and `.ai/handover.md`.
 EOF
 
-# 4. 初始化索引
-codegraph init .
-codegraph index .
+# 4. 按需建立索引
+codegraph status --json . || codegraph init .
+# 如果 status 显示 pendingChanges 有新增/修改/删除，再运行：
+codegraph sync .
 ```
 
 ---
@@ -98,11 +102,11 @@ codegraph status
 #   cd <workspace_root>/KnowledgeRoots/colbymchenry/codegraph
 #   npm run build && npm link
 codegraph install                     # 自动接入支持的 Agent
-codegraph init .
-codegraph index .
 
-# 如果已安装但索引过期
-codegraph sync
+# 启动守卫：不要反复重建索引
+codegraph status --json .             # 已初始化时用于判断是否需要同步
+codegraph sync .                      # 仅当 pendingChanges 有新增/修改/删除时运行
+codegraph init .                      # 仅在未初始化/无 .codegraph/ 时运行；init 会建立初始索引
 ```
 
 ### Step 2：建立 `.ai/` 长期记忆目录
@@ -178,7 +182,10 @@ Step 1：读取长期记忆
     → .ai/handover.md → .ai/repo_map.md → .ai/*_rules.md → .ai/token_saving_rules.md
 
 Step 2：检查 CodeGraph/MCP 可用性
-    → codegraph status → 必要时 codegraph sync
+    → codegraph status --json
+    → 已初始化且无变更：继续，不要 index
+    → 已初始化但有变更：codegraph sync
+    → 未初始化：codegraph init（init 已建立初始索引）
 
 Step 3：先查结构，再读文件
     → codegraph_explore (Primary) → codegraph_node (Secondary)
@@ -258,13 +265,15 @@ unless structural lookup failed and you explain why.
 
 For every task:
 1. Read `.ai/handover.md`, `.ai/repo_map.md`, and `.ai/codex_rules.md` first.
-2. Query the code graph before reading many files.
-3. Produce a candidate file list with reasons.
-4. Read the minimum necessary files.
-5. Explain the evidence chain before patching.
-6. Make the smallest safe patch.
-7. Run the smallest relevant test.
-8. Update `.ai/task_log.md` and `.ai/handover.md`.
+2. Run `codegraph status --json .`; sync existing indexes, and only run
+   `codegraph init .` when the project has no index.
+3. Query the code graph before reading many files.
+4. Produce a candidate file list with reasons.
+5. Read the minimum necessary files.
+6. Explain the evidence chain before patching.
+7. Make the smallest safe patch.
+8. Run the smallest relevant test.
+9. Update `.ai/task_log.md` and `.ai/handover.md`.
 
 Your goal is not only to finish the current task, but also to improve the
 permanent project memory so future sessions spend fewer tokens.

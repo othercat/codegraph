@@ -50,7 +50,7 @@ cd C:\path\to\your\project
 & "C:\Workspace\KnowledgeRoots\colbymchenry\codegraph\scripts\init-ai-memory.ps1"
 
 # 3. 检查 CodeGraph
-npx codegraph status
+npx codegraph status --json .
 ```
 
 ### macOS / Linux / WSL2 (Bash)
@@ -64,12 +64,12 @@ cd /path/to/your/project
 bash ~/Workspace/KnowledgeRoots/colbymchenry/codegraph/scripts/init-ai-memory.sh
 
 # 3. 检查 CodeGraph
-npx codegraph status
+npx codegraph status --json .
 ```
 
 脚本会完成以下工作：
 - 创建 `.ai/` 目录和 7 个核心文件
-- 初始化项目索引（`codegraph init . && codegraph index .`）
+- 按需建立项目索引：已有索引只 `codegraph sync .`，未初始化才 `codegraph init .`
 - 更新 `.gitignore`
 
 ---
@@ -113,9 +113,10 @@ cd /path/to/your/project
 # 接入你的 AI Agent
 codegraph install
 
-# 初始化项目索引
-codegraph init .
-codegraph index .
+# 按需建立索引，避免反复重建
+codegraph status --json .
+codegraph sync .       # 仅当 pendingChanges 有新增/修改/删除时运行
+codegraph init .       # 仅在未初始化/无 .codegraph/ 时运行；init 会建立初始索引
 ```
 
 ### Step 4：更新 .gitignore
@@ -146,14 +147,15 @@ git commit -m "chore: add .ai/ permanent capability template"
 ```markdown
 请按"代码库地图优先"流程工作：
 
-1. 先检查 CodeGraph 是否可用（`codegraph status`），不可用则说明原因。
-2. 如果可用，用 CodeGraph 查询 symbol、调用链、相关文件来定位问题。
-3. 如果没有 CodeGraph，先搜索项目结构，理解核心模块和入口。
-4. 读取文件前先列出候选文件和理由。
-5. 一次最多读 3-8 个文件，大文件只读相关片段。
-6. 修改前说明证据链。
-7. 只做最小必要修改。
-8. 修改后运行最小相关测试验证。
+1. 先检查 CodeGraph 是否可用（`codegraph status --json .`），不可用则说明原因。
+2. 如果项目已有索引，只在有变更时运行 `codegraph sync .`；如果没有索引，才运行 `codegraph init .`。
+3. 如果可用，用 CodeGraph 查询 symbol、调用链、相关文件来定位问题。
+4. 如果没有 CodeGraph，先搜索项目结构，理解核心模块和入口。
+5. 读取文件前先列出候选文件和理由。
+6. 一次最多读 3-8 个文件，大文件只读相关片段。
+7. 修改前说明证据链。
+8. 只做最小必要修改。
+9. 修改后运行最小相关测试验证。
 
 禁止无目标全仓 grep。
 ```
@@ -236,7 +238,10 @@ A：建议提交核心文件（repo_map.md、decisions.md、token_saving_rules.m
 A：不会。Codex 读取 `AGENTS.md` / `~/.codex/AGENTS.md`，Claude Code 读取 `CLAUDE.md` / `~/.claude/CLAUDE.md`。两套规则内容一致，只是存放位置不同。
 
 **Q：已有项目如何补建 `.ai/`？**
-A：直接进入项目根目录，执行方案一的全自动部署脚本，或手动复制模板文件后运行 `codegraph init . && codegraph index .`。
+A：直接进入项目根目录，执行方案一的全自动部署脚本，或手动复制模板文件后运行启动守卫：先 `codegraph status --json .`，已有索引则 `codegraph sync .`，没有索引才 `codegraph init .`。
+
+**Q：如何避免每次打开 Codex 都重建索引？**
+A：把 `codegraph status --json .` 当作启动守卫。`pendingChanges` 全为 0 时不要运行任何索引命令；有变更时运行 `codegraph sync .`；只有未初始化或 `.codegraph/` 不存在时才运行 `codegraph init .`。`codegraph index .` 只用于用户明确要求强制重建、索引损坏、或 schema/提取器重大变化后的维护场景。
 
 **Q：CodeGraph 安装后没有生效？**
 A：检查 MCP 配置是否正确写入：

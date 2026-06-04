@@ -207,3 +207,84 @@ A  .ai/codex_rules.md
 A  docs/permanent-capability-template.md
 A  docs/setup-guide.md
 ```
+
+---
+
+## 2026-06-04 Codex 全局 Repo Map First 能力验证与 MCP 接入
+
+### 用户需求
+
+> 建立 Codex 永久能力，适用于全部项目：先检查 CodeGraph，可用后用 CodeGraph 查询 symbol/调用链/相关文件，读取文件前列候选文件，修改前说明证据链，只做最小修改并运行最小相关测试，禁止无目标全仓 grep。
+
+### 过程记录
+
+1. 按 Repo Map First 流程读取 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/codex_rules.md`、`.ai/token_saving_rules.md`、`.ai/task_log.md`。
+2. 首次执行 `codegraph status` 失败：当前 PowerShell PATH 中没有 `codegraph`。
+3. 按要求使用本地 fork 源码构建并链接：刷新 Machine/User PATH 后执行 `npm run build` 和 `npm link`。
+4. 再次执行 `codegraph status` 成功：当前项目索引 up to date，backend 为 `better-sqlite3 - native (full WAL + FTS5)`。
+5. 检查 `~/.codex/AGENTS.md`：全局 Repo Map First 永久规则已存在，包含本地源码构建、候选文件、证据链、最小读取和最小测试等要求。
+6. 检查 `~/.codex/config.toml`：此前没有 `[mcp_servers.codegraph]`。
+7. 执行 `codegraph install --target codex --location global -y`，为 Codex 写入全局 CodeGraph MCP 配置。
+
+### 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `~/.codex/config.toml` | 修改 | 添加 `[mcp_servers.codegraph]`，command 为 `codegraph`，args 为 `["serve", "--mcp"]` |
+| `.ai/task_log.md` | 修改 | 记录本次全局能力验证与 MCP 接入 |
+| `.ai/handover.md` | 修改 | 更新当前状态 |
+
+### 验证结果
+
+- `codegraph status` ✅：206 files, 3,267 nodes, 11,048 edges，索引 up to date。
+- `Select-String ~/.codex/config.toml` ✅：确认存在 `[mcp_servers.codegraph]`、`command = "codegraph"`、`args = ["serve", "--mcp"]`。
+
+### 后续注意
+
+- 需要重启 Codex agent 后，新的 CodeGraph MCP server 配置才会在工具列表中生效。
+- 当前 session 可以使用 CLI fallback；新 session 应优先使用 MCP 暴露的 `codegraph_*` 工具。
+
+---
+
+## 2026-06-04 GitHub CLI 安装 + Codex 按需索引启动守卫
+
+### 用户需求
+
+1. 安装 GitHub CLI。
+2. 让所有 Codex 项目开始前自动用 CodeGraph 建立索引，但避免反复重建索引。
+3. 提交相关 repo 变更到远程仓库，并写清楚描述。
+
+### 过程记录
+
+1. 按 Repo Map First 流程读取 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/codex_rules.md`、`.ai/token_saving_rules.md`、`.ai/task_log.md`，并执行 `codegraph status`。
+2. 检查 `gh --version` 发现 GitHub CLI 不可用；`winget install GitHub.cli` 因 winget 源数据缺失失败。
+3. 改用 GitHub CLI 官方 release zip，安装 `gh` v2.93.0 到 `~/.local/gh/bin`，并把该目录追加到 User PATH。
+4. `gh auth status` 显示尚未登录；普通 `git push` 仍可尝试使用现有 git 凭据，PR/gh API 操作需要用户后续运行 `gh auth login`。
+5. 用 CodeGraph 查询 `Codex` 和 `install`，确认产品级 Codex 安装入口在 `src/installer/targets/codex.ts`，但该 target 按 issue #529 不再写 AGENTS 指南，因此本次不改安装器代码。
+6. 更新 `~/.codex/AGENTS.md`：把 Step 2 改成启动守卫，先 `codegraph status --json .`，已有索引只在有 `pendingChanges` 时 `codegraph sync .`，未初始化才 `codegraph init .`。
+7. 更新 `docs/permanent-capability-template.md` 和 `docs/setup-guide.md`：把旧的 `codegraph init . && codegraph index .` 流程改为按需索引，明确 `codegraph index .` 只用于强制重建/索引损坏/重大 schema 或提取器变更。
+
+### 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `~/.codex/AGENTS.md` | 修改 | Codex 全局按需索引启动守卫 |
+| `docs/permanent-capability-template.md` | 修改 | 通用模板改为 status/sync/init 条件流程 |
+| `docs/setup-guide.md` | 修改 | 新项目部署指南改为按需索引，新增避免重复重建 FAQ |
+| `.ai/task_log.md` | 修改 | 记录本次任务 |
+| `.ai/handover.md` | 修改 | 更新当前状态 |
+
+### 提交范围说明
+
+本次计划提交 repo 内相关文件：`.ai/handover.md`、`.ai/task_log.md`、`docs/permanent-capability-template.md`、`docs/setup-guide.md`。
+
+未跟踪的 `AGENTS.md` 和 `.agents/` 暂不纳入本次提交，因为它们不是本轮创建/修改的文件，且范围可能需要用户单独确认。
+
+### 验证结果
+
+- `gh --version` ✅：v2.93.0。
+- `codegraph status --json` ✅：initialized=true，pendingChanges added/modified/removed 均为 0。
+- `git diff --check` ✅：无 whitespace error（仅 CRLF 提示）。
+- `npm run build` ✅：tsc + copy-assets 成功。
+- `git commit` ✅：创建本地提交 `docs: add Codex on-demand CodeGraph indexing`。
+- `git push origin main` ❌：GitHub HTTPS 凭据无效，远端返回 `Invalid username or token`。`gh auth status` 也显示尚未登录，需要用户运行 `gh auth login` 或修复 git HTTPS/SSH 凭据后再推送。
