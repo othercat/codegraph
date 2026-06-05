@@ -1,5 +1,35 @@
 # Decisions: CodeGraph
 
+## ADR-005: 标准本地查询 API + CLI 为主路径，MCP 为兼容适配器
+
+### 背景
+
+Codex 侧已观察到 CLI 能证明 `.codegraph/` 索引健康，但 MCP 查询可能出现 `Transport closed`。这类失败不应触发重建索引，也不应把 MCP 可用性等同于 CodeGraph 查询能力本身。
+
+### 决策
+
+新增 `src/query/local-api.ts` 作为标准本地查询 API。CLI 和 MCP tools 都调用这套 API；MCP server 只作为兼容适配器，负责 MCP 协议、参数校验、输出格式、staleness/worktree notice 和部分 MCP 专用渲染。
+
+MCP 查询失败时的 fallback：
+1. 运行 `codegraph status --json <project>`。
+2. 如果 `initialized=true` 且 `pendingChanges.added/modified/removed` 全为 0，判定索引健康。
+3. 改走本地库/API 或 CLI 查询。
+4. 不运行 `codegraph index`，不删除 `.codegraph/`，除非 status 明确显示索引不可用/损坏，或用户要求强制重建。
+
+### 影响
+
+- CLI 成为标准本地查询主路径，适合脚本、CI、MCP fallback 和非 MCP Agent。
+- MCP tools 与 CLI 共享 symbol matching、generated-file 排序、callers/callees/impact 聚合和 files/status 规则。
+- 后续新增查询能力时，优先在本地 API 落地，再由 CLI/MCP 适配。
+
+### 验证
+
+- `npm run build`
+- `npx vitest run __tests__\local-query-api.test.ts __tests__\mcp-server-instructions-fallback.test.ts __tests__\mcp-files-path-normalization.test.ts`
+- `npx vitest run __tests__\mcp-staleness-banner.test.ts`
+- CLI smoke: `node dist\bin\codegraph.js query CodeGraph --path . --limit 3 --json`
+- `codegraph status --json .`
+
 ## ADR-001: 建立 .ai/ 长期记忆目录
 
 ### 背景

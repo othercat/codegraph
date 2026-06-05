@@ -82,6 +82,22 @@ export {
 export { Mutex, FileLock, processInBatches, debounce, throttle, MemoryMonitor } from './utils';
 export { FileWatcher, WatchOptions, PendingFile, LockUnavailableError } from './sync';
 export { MCPServer } from './mcp';
+export {
+  createLocalQueryApi,
+  globToRegex as localQueryGlobToRegex,
+  matchesSymbol as localQueryMatchesSymbol,
+  normalizeFileFilter,
+  rankGeneratedFilesLast,
+} from './query/local-api';
+export type {
+  FileQueryOptions,
+  ImpactQueryResult,
+  LocalIndexStatus,
+  LocalQueryApi,
+  LocalQuerySource,
+  RelatedSymbolResult,
+  SymbolMatchResult,
+} from './query/local-api';
 
 /**
  * Options for initializing a new CodeGraph project

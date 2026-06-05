@@ -29,6 +29,7 @@ import { getCodeGraphDir, isInitialized } from '../directory';
 import { detectWorktreeIndexMismatch, worktreeMismatchWarning } from '../sync/worktree';
 import { createShimmerProgress } from '../ui/shimmer-progress';
 import { getGlyphs } from '../ui/glyphs';
+import { createLocalQueryApi } from '../query/local-api';
 
 import { buildNode25BlockBanner, buildNodeTooOldBanner, MIN_NODE_MAJOR } from './node-version-check';
 import { relaunchWithWasmRuntimeFlagsIfNeeded } from '../extraction/wasm-runtime-flags';
@@ -694,20 +695,31 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
-      const stats = cg.getStats();
-      const changes = cg.getChangedFiles();
-      const backend = cg.getBackend();
-      const journalMode = cg.getJournalMode();
+      const status = createLocalQueryApi(cg).getIndexStatus();
+      const stats = {
+        fileCount: status.fileCount,
+        nodeCount: status.nodeCount,
+        edgeCount: status.edgeCount,
+        dbSizeBytes: status.dbSizeBytes,
+        nodesByKind: status.nodesByKind,
+        filesByLanguage: status.filesByLanguage,
+      };
+      const changes = {
+        added: new Array(status.pendingChanges.added),
+        modified: new Array(status.pendingChanges.modified),
+        removed: new Array(status.pendingChanges.removed),
+      };
+      const backend = status.backend;
+      const journalMode = status.journalMode;
 
       // JSON output mode
       if (options.json) {
-        const lastIndexedMs = cg.getLastIndexedAt();
         console.log(JSON.stringify({
           initialized: true,
           version: packageJson.version,
           projectPath,
           indexPath: getCodeGraphDir(projectPath),
-          lastIndexed: lastIndexedMs != null ? new Date(lastIndexedMs).toISOString() : null,
+          lastIndexed: status.lastIndexed != null ? new Date(status.lastIndexed).toISOString() : null,
           fileCount: stats.fileCount,
           nodeCount: stats.nodeCount,
           edgeCount: stats.edgeCount,
@@ -827,21 +839,12 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      const api = createLocalQueryApi(cg);
 
       const limit = parseInt(options.limit || '10', 10);
-      const rawResults = cg.searchNodes(search, {
+      const results = api.searchSymbols(search, {
         limit,
-        kinds: options.kind ? [options.kind as any] : undefined,
-      });
-
-      // Mirror the MCP search down-rank so the CLI also surfaces the
-      // hand-written implementation before protobuf/gRPC scaffolding
-      // when both share a name. See extraction/generated-detection.ts.
-      const { isGeneratedFile } = await import('../extraction/generated-detection');
-      const results = [...rawResults].sort((a, b) => {
-        const aGen = isGeneratedFile(a.node.filePath) ? 1 : 0;
-        const bGen = isGeneratedFile(b.node.filePath) ? 1 : 0;
-        return aGen - bGen;
+        kind: options.kind as any,
       });
 
       if (options.json) {
@@ -910,25 +913,16 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
-      let files = cg.getFiles();
+      const api = createLocalQueryApi(cg);
+      const allFiles = api.listFiles();
 
-      if (files.length === 0) {
+      if (allFiles.length === 0) {
         info('No files indexed. Run "codegraph index" first.');
         cg.destroy();
         return;
       }
 
-      // Filter by path prefix
-      if (options.filter) {
-        const filter = options.filter;
-        files = files.filter(f => f.path.startsWith(filter) || f.path.startsWith('./' + filter));
-      }
-
-      // Filter by glob pattern
-      if (options.pattern) {
-        const regex = globToRegex(options.pattern);
-        files = files.filter(f => regex.test(f.path));
-      }
+      const files = api.listFiles({ path: options.filter, pattern: options.pattern });
 
       if (files.length === 0) {
         info('No files found matching the criteria.');
@@ -1002,19 +996,6 @@ program
       process.exit(1);
     }
   });
-
-/**
- * Convert glob pattern to regex
- */
-function globToRegex(pattern: string): RegExp {
-  const escaped = pattern
-    .replace(/[.+^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, '{{GLOBSTAR}}')
-    .replace(/\*/g, '[^/]*')
-    .replace(/\?/g, '[^/]')
-    .replace(/\{\{GLOBSTAR\}\}/g, '.*');
-  return new RegExp(escaped);
-}
 
 /**
  * Print files as a tree
@@ -1196,40 +1177,22 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      const api = createLocalQueryApi(cg);
       const limit = parseInt(options.limit || '20', 10);
 
-      const matches = cg.searchNodes(symbol, { limit: 50 });
-      if (matches.length === 0) {
+      const result = api.findCallers(symbol, { limit });
+      if (result.matches.length === 0) {
         info(`Symbol "${symbol}" not found`);
         cg.destroy();
         return;
       }
 
-      const seen = new Set<string>();
-      const allCallers: Array<{ name: string; kind: string; filePath: string; startLine?: number }> = [];
-
-      for (const match of matches) {
-        const exactMatch = match.node.name === symbol || match.node.name.endsWith(`.${symbol}`) || match.node.name.endsWith(`::${symbol}`);
-        if (!exactMatch && matches.length > 1) continue;
-        for (const c of cg.getCallers(match.node.id)) {
-          if (!seen.has(c.node.id)) {
-            seen.add(c.node.id);
-            allCallers.push({ name: c.node.name, kind: c.node.kind, filePath: c.node.filePath, startLine: c.node.startLine });
-          }
-        }
-      }
-
-      // Fallback: if exact filter removed everything, use the top match
-      if (allCallers.length === 0 && matches[0]) {
-        for (const c of cg.getCallers(matches[0].node.id)) {
-          if (!seen.has(c.node.id)) {
-            seen.add(c.node.id);
-            allCallers.push({ name: c.node.name, kind: c.node.kind, filePath: c.node.filePath, startLine: c.node.startLine });
-          }
-        }
-      }
-
-      const limited = allCallers.slice(0, limit);
+      const limited = result.nodes.map((node) => ({
+        name: node.name,
+        kind: node.kind,
+        filePath: node.filePath,
+        startLine: node.startLine,
+      }));
 
       if (options.json) {
         console.log(JSON.stringify({ symbol, callers: limited }, null, 2));
@@ -1275,39 +1238,22 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      const api = createLocalQueryApi(cg);
       const limit = parseInt(options.limit || '20', 10);
 
-      const matches = cg.searchNodes(symbol, { limit: 50 });
-      if (matches.length === 0) {
+      const result = api.findCallees(symbol, { limit });
+      if (result.matches.length === 0) {
         info(`Symbol "${symbol}" not found`);
         cg.destroy();
         return;
       }
 
-      const seen = new Set<string>();
-      const allCallees: Array<{ name: string; kind: string; filePath: string; startLine?: number }> = [];
-
-      for (const match of matches) {
-        const exactMatch = match.node.name === symbol || match.node.name.endsWith(`.${symbol}`) || match.node.name.endsWith(`::${symbol}`);
-        if (!exactMatch && matches.length > 1) continue;
-        for (const c of cg.getCallees(match.node.id)) {
-          if (!seen.has(c.node.id)) {
-            seen.add(c.node.id);
-            allCallees.push({ name: c.node.name, kind: c.node.kind, filePath: c.node.filePath, startLine: c.node.startLine });
-          }
-        }
-      }
-
-      if (allCallees.length === 0 && matches[0]) {
-        for (const c of cg.getCallees(matches[0].node.id)) {
-          if (!seen.has(c.node.id)) {
-            seen.add(c.node.id);
-            allCallees.push({ name: c.node.name, kind: c.node.kind, filePath: c.node.filePath, startLine: c.node.startLine });
-          }
-        }
-      }
-
-      const limited = allCallees.slice(0, limit);
+      const limited = result.nodes.map((node) => ({
+        name: node.name,
+        kind: node.kind,
+        filePath: node.filePath,
+        startLine: node.startLine,
+      }));
 
       if (options.json) {
         console.log(JSON.stringify({ symbol, callees: limited }, null, 2));
@@ -1353,61 +1299,40 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      const api = createLocalQueryApi(cg);
       const depth = Math.min(Math.max(parseInt(options.depth || '2', 10), 1), 10);
 
-      const matches = cg.searchNodes(symbol, { limit: 50 });
-      if (matches.length === 0) {
+      const result = api.analyzeImpact(symbol, { depth });
+      if (result.matches.length === 0) {
         info(`Symbol "${symbol}" not found`);
         cg.destroy();
         return;
       }
 
-      // Merge impact subgraphs across all exact-matching symbols
-      const mergedNodes = new Map<string, { name: string; kind: string; filePath: string; startLine?: number }>();
-      const seenEdges = new Set<string>();
-      let edgeCount = 0;
-
-      for (const match of matches) {
-        const exactMatch = match.node.name === symbol || match.node.name.endsWith(`.${symbol}`) || match.node.name.endsWith(`::${symbol}`);
-        if (!exactMatch && matches.length > 1) continue;
-        const impact = cg.getImpactRadius(match.node.id, depth);
-        for (const [id, n] of impact.nodes) {
-          mergedNodes.set(id, { name: n.name, kind: n.kind, filePath: n.filePath, startLine: n.startLine });
-        }
-        for (const e of impact.edges) {
-          const key = `${e.source}->${e.target}:${e.kind}`;
-          if (!seenEdges.has(key)) {
-            seenEdges.add(key);
-            edgeCount++;
-          }
-        }
-      }
-
-      // Fallback to top match if exact filter removed everything
-      if (mergedNodes.size === 0 && matches[0]) {
-        const impact = cg.getImpactRadius(matches[0].node.id, depth);
-        for (const [id, n] of impact.nodes) {
-          mergedNodes.set(id, { name: n.name, kind: n.kind, filePath: n.filePath, startLine: n.startLine });
-        }
-        edgeCount = impact.edges.length;
-      }
+      const affected = Array.from(result.subgraph.nodes.values()).map((node) => ({
+        name: node.name,
+        kind: node.kind,
+        filePath: node.filePath,
+        startLine: node.startLine,
+      }));
+      const edgeCount = result.subgraph.edges.length;
 
       if (options.json) {
         console.log(JSON.stringify({
           symbol,
           depth,
-          nodeCount: mergedNodes.size,
+          nodeCount: affected.length,
           edgeCount,
-          affected: Array.from(mergedNodes.values()),
+          affected,
         }, null, 2));
-      } else if (mergedNodes.size === 0) {
+      } else if (affected.length === 0) {
         info(`No affected symbols found for "${symbol}"`);
       } else {
-        console.log(chalk.bold(`\nImpact of changing "${symbol}" — ${mergedNodes.size} affected symbols:\n`));
+        console.log(chalk.bold(`\nImpact of changing "${symbol}" — ${affected.length} affected symbols:\n`));
 
         // Group by file
         const byFile = new Map<string, Array<{ name: string; kind: string; startLine?: number }>>();
-        for (const node of mergedNodes.values()) {
+        for (const node of affected) {
           const list = byFile.get(node.filePath) || [];
           list.push({ name: node.name, kind: node.kind, startLine: node.startLine });
           byFile.set(node.filePath, list);

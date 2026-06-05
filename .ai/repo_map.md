@@ -1,5 +1,17 @@
 # Repo Map: CodeGraph
 
+## 2026-06-05 架构更新：本地查询 API / CLI 主路径
+
+当前查询主路径应理解为：
+
+```text
+CodeGraph public API / src/query/local-api.ts
+        -> src/bin/codegraph.ts (CLI, primary local path)
+        -> src/mcp/tools.ts (MCP compatibility adapter)
+```
+
+`src/query/local-api.ts` 是标准本地查询门面，封装 search、symbol matching、callers/callees/impact 聚合、files 过滤、status 健康摘要。CLI 与 MCP tools 均应调用这套 API；MCP 不应拥有独立业务查询逻辑。`Transport closed` 属于 MCP transport/adaptor 故障，不能据此推断 `.codegraph/` 索引损坏。
+
 ## 项目目标
 
 CodeGraph 是一个**本地优先**的代码智能库 + CLI + MCP 服务器。它用 tree-sitter 解析代码，将 symbols / edges / files 存入 SQLite (FTS5)，通过 MCP 暴露知识图谱给 AI Agent（Claude Code、Cursor、Codex CLI、OpenCode 等）。

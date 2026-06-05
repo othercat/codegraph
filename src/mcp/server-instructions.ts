@@ -61,6 +61,17 @@ typically one to a few calls; a grep/read exploration is dozens.
 - **Don't loop \`codegraph_node\` over many symbols** — one \`codegraph_explore\` call returns them all grouped by file, while each separate call re-reads the whole context and costs far more. Use \`codegraph_node\` for a single symbol.
 - **After editing, check the staleness banner.** When a tool response starts with "⚠️ Some files referenced below were edited since the last index sync…", the listed files are pending re-index — Read those specific files for accurate content. Every file NOT in that banner is fresh, so still trust codegraph. \`codegraph_status\` also lists pending files under "Pending sync".
 
+## MCP fallback
+
+If an MCP call fails with \`Transport closed\` or another transport error,
+treat it as an MCP adapter failure first, not index corruption. Run
+\`codegraph status --json <project>\`. If \`initialized=true\` and
+\`pendingChanges\` shows added=0, modified=0, removed=0, the local index is healthy; use the local
+library/API or CLI path instead (for example \`codegraph query\`,
+\`codegraph callers\`, \`codegraph files\`, or \`codegraph status --json\`).
+In that healthy-index case, do not run \`codegraph index\` and do not delete \`.codegraph/\`
+unless the user explicitly asks for a forced rebuild.
+
 ## Limitations
 
 - If a tool reports the project isn't initialized, \`.codegraph/\` doesn't exist yet — offer to run \`codegraph init -i\` to build the index.

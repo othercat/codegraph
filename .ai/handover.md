@@ -1,10 +1,21 @@
 # Handover: CodeGraph
 
+## 2026-06-05 本次交接更新：本地查询 API 已落地
+
+- 已新增 `src/query/local-api.ts`，作为标准本地查询 API：集中 search、symbol matching、callers/callees/impact 聚合、files 过滤和 status 健康摘要。
+- `src/bin/codegraph.ts` 的 `status/query/files/callers/callees/impact` 已改为调用本地 API；CLI 是本地主路径，不需要 MCP 才能查询。
+- `src/mcp/tools.ts` 的对应 tools 已改为调用同一 API；MCP 现在主要承担参数校验、输出格式、staleness/worktree notice 和 explore/node 的 MCP 专用渲染。
+- `src/mcp/server-instructions.ts` 已写入 fallback 规则：MCP `Transport closed` 先视为 transport/adapter 故障；先跑 `codegraph status --json <project>`；若 `initialized=true` 且 `pendingChanges` 三项为 0，索引健康，走本地库/API 或 CLI，不运行 `codegraph index`，不删除 `.codegraph/`。
+- 验证通过：`npm run build`；本地 API/MCP fallback/MCP files/staleness 相关 vitest；CLI `query`/`files` smoke；`codegraph status --json .` 显示 pending 为 0。
+- 下一步建议：若继续推进，可把 `context` 和 `affected` 的高层查询也纳入本地 API，但要继续用小步 TDD，避免顺手重构 MCP explore/node 的大块渲染逻辑。
+
 ## 当前目标
 
 已完成的：为 CodeGraph 自身项目建立「代码库地图优先」的永久能力体系，并把 Codex 全局 Repo Map First 规则与 CodeGraph MCP 配置接入到 `~/.codex/`。
 
 当前补充：GitHub CLI 已以便携方式安装到 `~/.local/gh/bin`；Codex 全局规则和仓库模板已改为“按需索引启动守卫”，避免每次进入项目都重建索引。
+
+2026-06-05 补充：Codex 侧已观察到“CLI 索引健康，但 MCP 查询某个 symbol 时出现 `Transport closed`”的风险。新的架构判断是：CodeGraph 应以标准本地核心库/API 与 CLI 作为主入口，MCP server 降级为兼容适配器。MCP transport 失败时，不应判断为索引损坏，也不应自动重建索引；应先用 `codegraph status --json <project>` 判断 `.codegraph/` 状态，再走本地库/CLI fallback。
 
 ## 已完成
 
@@ -74,15 +85,17 @@
 
 CodeGraph 项目本身对自己的 dogfooding 已完成初步建立。`.ai/` 体系现在包含 7 个文件，覆盖了项目地图、规则、日志、决策、记忆索引。
 
+新的产品/架构判断：CodeGraph 的真正能力边界应在 `.codegraph` SQLite 索引、`src/index.ts` 公共 API、数据库/图查询核心模块和 CLI 上；MCP 只是把这套能力暴露给支持 MCP 的 Agent。后续不要把“Agent 能否通过 MCP 连接成功”等同于“CodeGraph 能否查询成功”。
+
 需要关注 `.ai/` 的维护：这些文件必须随项目演化而更新，否则会迅速过时变成噪音。每次任务结束时更新 `task_log.md` 和 `handover.md` 是关键。
 
 ## 下一步建议
 
-1. 重启 Codex agent，让 `~/.codex/config.toml` 中的 CodeGraph MCP server 生效
-2. 新 session 进入项目后，验证是否自动先读 `.ai/`
-3. 验证 `codegraph_*` MCP 工具是否出现在工具列表；若未出现，先用 CLI fallback：`codegraph status` / `codegraph sync`
-4. 如需使用 gh 创建 PR 或调用 GitHub API，先运行 `gh auth login`
-5. 后续任务中继续验证 `.ai/` 体系有效性
+1. 在 CodeGraph 项目中继续推进“核心库/API + CLI 主路径，MCP 兼容适配器”的实现和文档化。
+2. 梳理当前 MCP tools 是否可以复用同一套标准本地查询 API，避免 MCP 层拥有独立业务逻辑。
+3. 给 Codex/Agent 侧写清楚 fallback 规则：MCP 报 `Transport closed` 时，先 `codegraph status --json <project>`；若 `initialized=true` 且 pending 为 0，判定为 transport 故障，改走本地库/CLI 查询，不运行 `index`。
+4. 新 session 进入项目后，继续验证是否自动先读 `.ai/`，并确认 CodeGraph startup guard 仍按 `status -> sync/init` 执行。
+5. 如需使用 gh 创建 PR 或调用 GitHub API，先运行 `gh auth status` 确认登录状态。
 
 ## 已知坑
 
@@ -93,4 +106,5 @@ CodeGraph 项目本身对自己的 dogfooding 已完成初步建立。`.ai/` 体
 - Windows 特有失败：`security.test.ts > symlink resistance`（需要提权）、`mcp-initialize.test.ts` / `mcp-roots.test.ts`（afterEach EPERM，子进程持有文件句柄）
 - 构建时必须 `copy-assets`：新 SQL 或 grammar WASM 必须 copy 否则不 ship
 - `--init` 对进程生命周期测试是 load-bearing（Docker 中必须加）
+- MCP `Transport closed` 是适配/传输层故障信号，不等于 `.codegraph/` 索引坏；先查 `codegraph status --json`，索引健康时走本地库/CLI fallback，不要自动 `index` 或删除 `.codegraph/`
 - `.ai/` 文件如果过时会成为误导信息，必须勤更新

@@ -28,6 +28,7 @@ import {
 } from 'fs';
 import { clamp, validatePathWithinRoot, validateProjectPath } from '../utils';
 import { isGeneratedFile } from '../extraction/generated-detection';
+import { createLocalQueryApi } from '../query/local-api';
 import { resolve as resolvePath } from 'path';
 
 /** Maximum output length to prevent context bloat (characters) */
@@ -50,15 +51,6 @@ const MAX_INPUT_LENGTH = 10_000;
 const MAX_PATH_LENGTH = 4_096;
 
 /**
- * Rust path roots that have no file-system equivalent — `crate` is the
- * current crate, `super` is the parent module, `self` is the current
- * module. Used by `matchesSymbol` to strip these before file-path
- * matching so `crate::configurator::stage_apply::run` resolves the
- * same as `configurator::stage_apply::run`.
- */
-const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
-
-/**
  * Node kinds that contain other symbols. For these, `codegraph_node` with
  * `includeCode=true` returns a structural outline (member names + signatures
  * + line numbers) instead of the full body, which for a large class is a
@@ -67,12 +59,6 @@ const RUST_PATH_PREFIXES = new Set(['crate', 'super', 'self']);
 const CONTAINER_NODE_KINDS = new Set<NodeKind>([
   'class', 'struct', 'interface', 'trait', 'protocol', 'enum', 'namespace', 'module',
 ]);
-
-/** Last `::` / `.` / `/`-separated segment of a qualified symbol. */
-function lastQualifierPart(symbol: string): string {
-  const parts = symbol.split(/::|[./]/).filter((p) => p.length > 0);
-  return parts[parts.length - 1] ?? symbol;
-}
 
 /**
  * Calculate the recommended number of codegraph_explore calls based on project size.
@@ -1060,25 +1046,16 @@ export class ToolHandler {
     const rawLimit = Number(args.limit) || 10;
     const limit = clamp(rawLimit, 1, 100);
 
-    const results = cg.searchNodes(query, {
+    const results = createLocalQueryApi(cg).searchSymbols(query, {
       limit,
-      kinds: kind ? [kind as NodeKind] : undefined,
+      kind: kind ? kind as NodeKind : undefined,
     });
 
     if (results.length === 0) {
       return this.textResult(`No results found for "${query}"`);
     }
 
-    // Down-rank generated files within the FTS-returned set so a search
-    // for "Send" surfaces the hand-written keeper before .pb.go stubs
-    // that share the name. Stable: only reorders generated vs. not.
-    const ranked = [...results].sort((a, b) => {
-      const aGen = isGeneratedFile(a.node.filePath) ? 1 : 0;
-      const bGen = isGeneratedFile(b.node.filePath) ? 1 : 0;
-      return aGen - bGen;
-    });
-
-    const formatted = this.formatSearchResults(ranked);
+    const formatted = this.formatSearchResults(results);
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -1092,28 +1069,16 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
+    const result = createLocalQueryApi(cg).findCallers(symbol, { limit });
+    if (result.matches.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
 
-    // Aggregate callers across all matching symbols
-    const seen = new Set<string>();
-    const allCallers: Node[] = [];
-    for (const node of allMatches.nodes) {
-      for (const c of cg.getCallers(node.id)) {
-        if (!seen.has(c.node.id)) {
-          seen.add(c.node.id);
-          allCallers.push(c.node);
-        }
-      }
+    if (result.nodes.length === 0) {
+      return this.textResult(`No callers found for "${symbol}"${result.note}`);
     }
 
-    if (allCallers.length === 0) {
-      return this.textResult(`No callers found for "${symbol}"${allMatches.note}`);
-    }
-
-    const formatted = this.formatNodeList(allCallers.slice(0, limit), `Callers of ${symbol}`) + allMatches.note;
+    const formatted = this.formatNodeList(result.nodes, `Callers of ${symbol}`) + result.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -1127,28 +1092,16 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const limit = clamp((args.limit as number) || 20, 1, 100);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
+    const result = createLocalQueryApi(cg).findCallees(symbol, { limit });
+    if (result.matches.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
 
-    // Aggregate callees across all matching symbols
-    const seen = new Set<string>();
-    const allCallees: Node[] = [];
-    for (const node of allMatches.nodes) {
-      for (const c of cg.getCallees(node.id)) {
-        if (!seen.has(c.node.id)) {
-          seen.add(c.node.id);
-          allCallees.push(c.node);
-        }
-      }
+    if (result.nodes.length === 0) {
+      return this.textResult(`No callees found for "${symbol}"${result.note}`);
     }
 
-    if (allCallees.length === 0) {
-      return this.textResult(`No callees found for "${symbol}"${allMatches.note}`);
-    }
-
-    const formatted = this.formatNodeList(allCallees.slice(0, limit), `Callees of ${symbol}`) + allMatches.note;
+    const formatted = this.formatNodeList(result.nodes, `Callees of ${symbol}`) + result.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -1162,37 +1115,12 @@ export class ToolHandler {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
     const depth = clamp((args.depth as number) || 2, 1, 10);
 
-    const allMatches = this.findAllSymbols(cg, symbol);
-    if (allMatches.nodes.length === 0) {
+    const result = createLocalQueryApi(cg).analyzeImpact(symbol, { depth });
+    if (result.matches.length === 0) {
       return this.textResult(`Symbol "${symbol}" not found in the codebase`);
     }
 
-    // Aggregate impact across all matching symbols
-    const mergedNodes = new Map<string, Node>();
-    const mergedEdges: Edge[] = [];
-    const seenEdges = new Set<string>();
-
-    for (const node of allMatches.nodes) {
-      const impact = cg.getImpactRadius(node.id, depth);
-      for (const [id, n] of impact.nodes) {
-        mergedNodes.set(id, n);
-      }
-      for (const e of impact.edges) {
-        const key = `${e.source}->${e.target}:${e.kind}`;
-        if (!seenEdges.has(key)) {
-          seenEdges.add(key);
-          mergedEdges.push(e);
-        }
-      }
-    }
-
-    const mergedImpact = {
-      nodes: mergedNodes,
-      edges: mergedEdges,
-      roots: allMatches.nodes.map(n => n.id),
-    };
-
-    const formatted = this.formatImpact(symbol, mergedImpact) + allMatches.note;
+    const formatted = this.formatImpact(symbol, result.subgraph) + result.note;
     return this.textResult(this.truncateOutput(formatted));
   }
 
@@ -2693,7 +2621,7 @@ export class ToolHandler {
         }
       } catch { /* closed instance — leave as is */ }
     }
-    const stats = cg.getStats();
+    const status = createLocalQueryApi(cg).getIndexStatus();
 
     // Warn when this index actually belongs to a different git working tree
     // (e.g. the server resolved up from a nested worktree to the main checkout).
@@ -2710,16 +2638,15 @@ export class ToolHandler {
       lines.push(`> ⚠ ${worktreeMismatchWarning(mismatch).replace(/\n/g, '\n> ')}`, '');
     }
     lines.push(
-      `**Files indexed:** ${stats.fileCount}`,
-      `**Total nodes:** ${stats.nodeCount}`,
-      `**Total edges:** ${stats.edgeCount}`,
-      `**Database size:** ${(stats.dbSizeBytes / 1024 / 1024).toFixed(2)} MB`,
+      `**Files indexed:** ${status.fileCount}`,
+      `**Total nodes:** ${status.nodeCount}`,
+      `**Total edges:** ${status.edgeCount}`,
+      `**Database size:** ${(status.dbSizeBytes / 1024 / 1024).toFixed(2)} MB`,
     );
 
     // Surface the active SQLite backend (node:sqlite preferred, better-sqlite3
     // fallback on platforms where the bundled SQLite lacks FTS5).
-    const backend = cg.getBackend();
-    const backendText = backend === 'better-sqlite3'
+    const backendText = status.backend === 'better-sqlite3'
       ? 'better-sqlite3 (native) — full WAL + FTS5'
       : 'node:sqlite (Node built-in) — full WAL + FTS5';
     lines.push(`**Backend:** ${backendText}`);
@@ -2728,7 +2655,7 @@ export class ToolHandler {
     // anything else ⇒ they can ("database is locked"). node:sqlite supports WAL
     // everywhere, so a non-wal mode means the filesystem can't (network/
     // virtualized mounts, WSL2 /mnt). See issue #238.
-    const journalMode = cg.getJournalMode();
+    const journalMode = status.journalMode;
     if (journalMode === 'wal') {
       lines.push(`**Journal mode:** wal (concurrent reads safe)`);
     } else {
@@ -2740,14 +2667,14 @@ export class ToolHandler {
 
     lines.push('', '### Nodes by Kind:');
 
-    for (const [kind, count] of Object.entries(stats.nodesByKind)) {
+    for (const [kind, count] of Object.entries(status.nodesByKind)) {
       if ((count as number) > 0) {
         lines.push(`- ${kind}: ${count}`);
       }
     }
 
     lines.push('', '### Languages:');
-    for (const [lang, count] of Object.entries(stats.filesByLanguage)) {
+    for (const [lang, count] of Object.entries(status.filesByLanguage)) {
       if ((count as number) > 0) {
         lines.push(`- ${lang}: ${count}`);
       }
@@ -2757,7 +2684,7 @@ export class ToolHandler {
     // (issue #403). Surfacing it inside `status` gives the agent a single
     // place to ask "is the index caught up?" rather than inferring from
     // banners on other tool calls.
-    const pending = cg.getPendingFiles();
+    const pending = status.pendingFiles;
     if (pending.length > 0) {
       lines.push('', '### Pending sync:');
       const now = Date.now();
@@ -2776,6 +2703,7 @@ export class ToolHandler {
    */
   private async handleFiles(args: Record<string, unknown>): Promise<ToolResult> {
     const cg = this.getCodeGraph(args.projectPath as string | undefined);
+    const api = createLocalQueryApi(cg);
     const pathFilter = args.path as string | undefined;
     const pattern = args.pattern as string | undefined;
     const format = (args.format as 'tree' | 'flat' | 'grouped') || 'tree';
@@ -2783,33 +2711,13 @@ export class ToolHandler {
     const maxDepth = args.maxDepth != null ? clamp(args.maxDepth as number, 1, 20) : undefined;
 
     // Get all files from the index
-    const allFiles = cg.getFiles();
+    const allFiles = api.listFiles();
 
     if (allFiles.length === 0) {
       return this.textResult('No files indexed. Run `codegraph index` first.');
     }
 
-    // Filter by path prefix. Stored paths are project-relative POSIX (e.g.
-    // "src/foo.ts"), but agents commonly pass project-root variants like "/",
-    // ".", "./", "" or Windows-style "src\foo" — and prefixes with leading
-    // "/", "./" or "\". Normalize all of those before matching so the agent
-    // gets results instead of falling back to Read/Glob (see #426).
-    const normalizedFilter = pathFilter
-      ? pathFilter
-          .replace(/\\/g, '/')
-          .replace(/^(?:\.?\/+)+/, '')
-          .replace(/^\.$/, '')
-          .replace(/\/+$/, '')
-      : '';
-    let files = normalizedFilter
-      ? allFiles.filter(f => f.path === normalizedFilter || f.path.startsWith(normalizedFilter + '/'))
-      : allFiles;
-
-    // Filter by glob pattern
-    if (pattern) {
-      const regex = this.globToRegex(pattern);
-      files = files.filter(f => regex.test(f.path));
-    }
+    const files = api.listFiles({ path: pathFilter, pattern });
 
     if (files.length === 0) {
       return this.textResult(`No files found matching the criteria.`);
@@ -2831,19 +2739,6 @@ export class ToolHandler {
     }
 
     return this.textResult(this.truncateOutput(output));
-  }
-
-  /**
-   * Convert glob pattern to regex
-   */
-  private globToRegex(pattern: string): RegExp {
-    const escaped = pattern
-      .replace(/[.+^${}()|[\]\\]/g, '\\$&')  // Escape special regex chars except * and ?
-      .replace(/\*\*/g, '{{GLOBSTAR}}')       // Temp placeholder for **
-      .replace(/\*/g, '[^/]*')                // * matches anything except /
-      .replace(/\?/g, '[^/]')                 // ? matches single char except /
-      .replace(/\{\{GLOBSTAR\}\}/g, '.*');    // ** matches anything including /
-    return new RegExp(escaped);
   }
 
   /**
@@ -2975,65 +2870,6 @@ export class ToolHandler {
   // =========================================================================
 
   /**
-   * Find a symbol by name, handling disambiguation when multiple matches exist.
-   * Returns the best match and a note about alternatives if any.
-   */
-  /**
-   * Check if a node matches a symbol query.
-   *
-   * Accepts simple names (`run`) and three flavors of qualifier:
-   *   - dotted     `Session.request`         (TS/JS/Python)
-   *   - colon-pair `stage_apply::run`        (Rust, C++, Ruby)
-   *   - slash      `configurator/stage_apply` (path-ish)
-   *
-   * Multi-level qualifiers compose: `crate::configurator::stage_apply::run`
-   * works. Rust path prefixes (`crate`, `super`, `self`) are stripped so
-   * the canonical `crate::module::symbol` form resolves.
-   *
-   * Resolution order, last part must always equal `node.name`:
-   *   1. Suffix-match against `qualifiedName` (handles class-scoped methods
-   *      where the extractor builds the qualified name from the AST stack)
-   *   2. File-path containment (handles file-derived modules in Rust/
-   *      Python — `stage_apply::run` matches a `run` in `stage_apply.rs`)
-   */
-  private matchesSymbol(node: Node, symbol: string): boolean {
-    // Simple name match
-    if (node.name === symbol) return true;
-    // File basename match (e.g., "product-card" matches "product-card.liquid")
-    if (node.kind === 'file' && node.name.replace(/\.[^.]+$/, '') === symbol) return true;
-
-    // Qualified-name lookups: split on any supported separator. `\w` keeps
-    // identifier chars (incl. `_`) intact; everything else is treated as
-    // a separator we tolerate.
-    if (!/[.\/]|::/.test(symbol)) return false;
-    const parts = symbol.split(/::|[./]/).filter((p) => p.length > 0);
-    if (parts.length < 2) return false;
-
-    const lastPart = parts[parts.length - 1]!;
-    if (node.name !== lastPart) return false;
-
-    // Stage 1: qualified-name suffix match. The extractor joins the
-    // semantic hierarchy with `::`, so `Session.request` and
-    // `Session::request` both become `Session::request` here.
-    const colonSuffix = parts.join('::');
-    if (node.qualifiedName.includes(colonSuffix)) return true;
-
-    // Stage 2: file-path containment. Rust modules and Python packages
-    // are not in `qualifiedName` — they're encoded in the file path. So
-    // `stage_apply::run` matches a `run` in any file whose path
-    // contains a `stage_apply` segment (with or without an extension).
-    //
-    // Filter out Rust path prefixes that have no file-system equivalent.
-    const containerHints = parts.slice(0, -1).filter((p) => !RUST_PATH_PREFIXES.has(p));
-    if (containerHints.length === 0) return false;
-
-    const segments = node.filePath.split('/').filter((s) => s.length > 0);
-    return containerHints.every((hint) =>
-      segments.some((seg) => seg === hint || seg.replace(/\.[^.]+$/, '') === hint)
-    );
-  }
-
-  /**
    * Find ALL definitions matching a name, ranked, so codegraph_node can return
    * every overload instead of guessing one (the wrong guess → a Read). Keepers
    * rank before generated stubs (.pb.go etc.); stable within a group preserves
@@ -3042,50 +2878,7 @@ export class ToolHandler {
    * bare name with no exact match falls back to the single top fuzzy result.
    */
   private findSymbolMatches(cg: CodeGraph, symbol: string): Node[] {
-    const isQualified = /[.\/]|::/.test(symbol);
-
-    // For a bare name, enumerate EVERY exact-name definition via the direct index
-    // (not FTS, which caps + ranks): tokio's `poll` has 50+ defs and the one the
-    // caller wants (`Harness::poll` at harness.rs:153) ranks below any search cut,
-    // so it could be neither rendered nor pinned by the file/line disambiguator —
-    // and the agent Read it. With the full set, the multi-overload render + the
-    // file/line filter can both reach it.
-    if (!isQualified) {
-      const exact = cg.getNodesByName(symbol);
-      if (exact.length > 0) {
-        return [...exact].sort((a, b) => (isGeneratedFile(a.filePath) ? 1 : 0) - (isGeneratedFile(b.filePath) ? 1 : 0));
-      }
-      // No exact match — use the single top fuzzy result (e.g. a file basename).
-      const fuzzy = cg.searchNodes(symbol, { limit: 10 });
-      return fuzzy[0] ? [fuzzy[0].node] : [];
-    }
-
-    // Qualified lookup (`Session.request`, `stage_apply::run`): FTS + matchesSymbol.
-    const limit = 50;
-    let results = cg.searchNodes(symbol, { limit });
-
-    // FTS strips colons, so `stage_apply::run` searches the literal
-    // `stage_applyrun` and finds nothing. Re-search by the bare last part and
-    // let `matchesSymbol` filter by qualifier.
-    if (isQualified && results.length === 0) {
-      const tail = lastQualifierPart(symbol);
-      if (tail && tail !== symbol) results = cg.searchNodes(tail, { limit });
-    }
-
-    if (results.length === 0) return [];
-
-    const exactMatches = results.filter((r) => this.matchesSymbol(r.node, symbol));
-    if (exactMatches.length === 0) {
-      // No exact match — a qualified lookup must not fall back to a fuzzy file
-      // hit (#173); a bare name may use the single top fuzzy result.
-      return isQualified ? [] : results[0] ? [results[0].node] : [];
-    }
-
-    // Down-rank generated files (.pb.go, .pulsar.go, _grpc.pb.go, …) so a flow
-    // query prefers the keeper implementation over the protobuf-generated stub.
-    return [...exactMatches]
-      .sort((a, b) => (isGeneratedFile(a.node.filePath) ? 1 : 0) - (isGeneratedFile(b.node.filePath) ? 1 : 0))
-      .map((r) => r.node);
+    return createLocalQueryApi(cg).findSymbolMatches(symbol);
   }
 
   /**
@@ -3093,41 +2886,7 @@ export class ToolHandler {
    * results across all matching symbols (e.g., multiple classes with an `execute` method).
    */
   private findAllSymbols(cg: CodeGraph, symbol: string): { nodes: Node[]; note: string } {
-    let results = cg.searchNodes(symbol, { limit: 50 });
-
-    // Mirror the fallback in `findSymbol` for qualified queries — FTS
-    // strips colons, so a module-qualified lookup needs a second pass
-    // by the bare last part.
-    if (results.length === 0 && /[.\/]|::/.test(symbol)) {
-      const tail = lastQualifierPart(symbol);
-      if (tail && tail !== symbol) results = cg.searchNodes(tail, { limit: 50 });
-    }
-
-    if (results.length === 0) {
-      return { nodes: [], note: '' };
-    }
-
-    const exactMatches = results.filter(r => this.matchesSymbol(r.node, symbol));
-
-    if (exactMatches.length <= 1) {
-      const node = exactMatches[0]?.node ?? results[0]!.node;
-      return { nodes: [node], note: '' };
-    }
-
-    // Same generated-file down-rank as findSymbol — keeps callers/callees
-    // /impact aggregation aligned (a query against "Send" returns the
-    // hand-written implementations before the protobuf scaffold).
-    const ranked = [...exactMatches].sort((a, b) => {
-      const aGen = isGeneratedFile(a.node.filePath) ? 1 : 0;
-      const bGen = isGeneratedFile(b.node.filePath) ? 1 : 0;
-      return aGen - bGen;
-    });
-
-    const locations = ranked.map(r =>
-      `${r.node.kind} at ${r.node.filePath}:${r.node.startLine}`
-    );
-    const note = `\n\n> **Note:** Aggregated results across ${ranked.length} symbols named "${symbol}": ${locations.join(', ')}`;
-    return { nodes: ranked.map(r => r.node), note };
+    return createLocalQueryApi(cg).findAllSymbols(symbol);
   }
 
   /**

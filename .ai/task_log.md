@@ -1,5 +1,74 @@
 # Task Log: CodeGraph
 
+## 2026-06-05 落地本地查询 API + CLI 主路径
+
+### 用户需求
+
+将 CodeGraph 从“主要依赖 MCP Server 查询”推进为“标准本地核心库/API + CLI 为主路径，MCP Server 作为兼容适配器”。要求保持 Repo Map First、避免无故 `index`、实现 MCP 失败时的健康索引 fallback 规则，并更新 `.ai/`。
+
+### 过程记录
+
+1. 按 Repo Map First 读取 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/codex_rules.md`、`.ai/token_saving_rules.md`、`.ai/task_log.md`。
+2. 运行 `codegraph status --json .`，确认 `initialized=true`，`pendingChanges.added/modified/removed=0`，未运行 `sync` 或 `index`。
+3. 用 CodeGraph 查询 `CodeGraph`、CLI commands、MCP tools、`GraphQueryManager`、`ContextBuilder` 和 search 路径，确认核心能力已在 `src/index.ts`/graph/context/search 模块内，重复编排主要在 CLI 与 `src/mcp/tools.ts`。
+4. 先写红测试：`__tests__/local-query-api.test.ts` 要求存在本地查询 API；`__tests__/mcp-server-instructions-fallback.test.ts` 要求 MCP initialize 指令记录 `Transport closed` fallback 规则。
+5. 新增 `src/query/local-api.ts`：集中 search、symbol matching、callers/callees/impact 聚合、files 过滤、status 健康摘要。
+6. `src/bin/codegraph.ts` 的 `status/query/files/callers/callees/impact` 改为调用本地查询 API；CLI 保留命令行展示层。
+7. `src/mcp/tools.ts` 的 search/callers/callees/impact/files/status 改为调用同一 API；MCP 保留工具参数校验、markdown 输出、staleness/worktree notice、explore/node 特有渲染。
+8. `src/mcp/server-instructions.ts` 增加 MCP fallback：`Transport closed` 先视为 adapter/transport 故障；先跑 `codegraph status --json <project>`；若 `initialized=true` 且 `pendingChanges` 三项为 0，则走本地库/API 或 CLI，不运行 `codegraph index`，不删除 `.codegraph/`。
+
+### 修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/query/local-api.ts` | 新增标准本地查询 API |
+| `src/index.ts` | 导出本地查询 API 和相关类型/工具函数 |
+| `src/bin/codegraph.ts` | CLI 查询/status/files/traversal 命令改走本地 API |
+| `src/mcp/tools.ts` | MCP tools 改为薄适配器，复用本地 API |
+| `src/mcp/server-instructions.ts` | 记录 MCP transport failure fallback 规则 |
+| `__tests__/local-query-api.test.ts` | 新增本地 API 行为测试 |
+| `__tests__/mcp-server-instructions-fallback.test.ts` | 新增 fallback 文案测试 |
+| `.ai/handover.md` / `.ai/repo_map.md` / `.ai/decisions.md` / `.ai/task_log.md` | 记录本次架构状态 |
+
+### 验证结果
+
+- `npm run build`：通过。
+- `npx vitest run __tests__\local-query-api.test.ts __tests__\mcp-server-instructions-fallback.test.ts __tests__\mcp-files-path-normalization.test.ts`：3 files / 16 tests 通过。
+- `npx vitest run __tests__\mcp-staleness-banner.test.ts`：1 file / 5 tests 通过。
+- `node dist\bin\codegraph.js query CodeGraph --path . --limit 3 --json`：通过，CLI query 主路径可用。
+- `node dist\bin\codegraph.js files --path . --filter src --format flat --no-metadata`：通过，CLI files 主路径可用。
+- `codegraph status --json .`：`initialized=true`，`pendingChanges` 三项为 0，未运行 `index`。
+
+### 下一步
+
+1. 后续可继续把 `context` / `affected` 的更高层查询也收束到本地 API，但应保持小步测试驱动。
+2. 若再遇到 MCP `Transport closed`，先按 server instructions 跑 status guard；健康索引时走 CLI/API fallback，不重建 `.codegraph/`。
+
+## 2026-06-05 记录 Codex 侧 CodeGraph 入口架构判断
+
+### 用户需求
+
+用户要在 Codex 的 CodeGraph 项目继续推进：按照“做标准工具库调用，而且 MCP 应降级为兼容入口”的方向更新 `.ai/handover.md`。
+
+### 过程记录
+
+1. 按 Repo Map First 流程读取 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/codex_rules.md`、`.ai/token_saving_rules.md`、`.ai/task_log.md`。
+2. 运行 `codegraph status --json .`，确认当前 CodeGraph repo 索引健康：`initialized=true`，`fileCount=206`，`nodeCount=3272`，pending added/modified/removed 均为 0，backend 为 `better-sqlite3`。
+3. 通过 MCP `codegraph_status` 再次确认同一项目可被查询，说明当前问题重点不是索引损坏，而是 MCP transport 可能间歇失败或作为单一入口过脆弱。
+4. 更新 `.ai/handover.md`：明确标准本地核心库/API 与 CLI 是主路径，MCP server 是兼容适配器；`Transport closed` 不触发重建索引，应先用 status guard 判断，再走本地库/CLI fallback。
+
+### 修改文件
+
+| 文件 | 操作 | 说明 |
+|------|------|------|
+| `.ai/handover.md` | 修改 | 增加 2026-06-05 架构判断、下一步建议和 MCP `Transport closed` 已知坑 |
+| `.ai/task_log.md` | 修改 | 记录本次 handover 更新 |
+
+### 验证结果
+
+- `git diff --check -- .ai/handover.md .ai/task_log.md`：退出码 0，仅有 Windows LF/CRLF normalization 提示。
+- `codegraph status --json .`：`initialized=true`，`fileCount=206`，`nodeCount=3272`，pending added/modified/removed 均为 0，backend 为 `better-sqlite3`。
+
 ## 2026-06-04 建立 .ai/ 永久能力体系
 
 ### 用户需求
