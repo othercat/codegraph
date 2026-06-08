@@ -1,4 +1,4 @@
-import type { Edge, FileRecord, GraphStats, Node, NodeKind, SearchOptions, SearchResult, Subgraph } from '../types';
+import type { Edge, FileRecord, GraphStats, Node, NodeKind, SearchOptions, SearchResult, Subgraph, TaskInput, TaskContext, BuildContextOptions } from '../types';
 import type { PendingFile } from '../sync';
 import { isGeneratedFile } from '../extraction/generated-detection';
 
@@ -11,6 +11,7 @@ export interface LocalQuerySource {
   getCallers(nodeId: string, maxDepth?: number): Array<{ node: Node; edge: Edge }>;
   getCallees(nodeId: string, maxDepth?: number): Array<{ node: Node; edge: Edge }>;
   getImpactRadius(nodeId: string, maxDepth?: number): Subgraph;
+  getFileDependents(filePath: string): string[];
   getFiles(): FileRecord[];
   getStats(): GraphStats;
   getChangedFiles(): { added: string[]; modified: string[]; removed: string[] };
@@ -18,6 +19,7 @@ export interface LocalQuerySource {
   getBackend(): string;
   getJournalMode(): string;
   getPendingFiles?(): PendingFile[];
+  buildContext(input: TaskInput, options?: BuildContextOptions): Promise<TaskContext | string>;
 }
 
 export interface SymbolMatchResult {
@@ -63,6 +65,12 @@ export interface LocalIndexStatus {
   pendingFiles: PendingFile[];
 }
 
+export interface AffectedTestsResult {
+  changedFiles: string[];
+  affectedTests: string[];
+  totalDependentsTraversed: number;
+}
+
 export interface LocalQueryApi {
   searchSymbols(query: string, options?: { limit?: number; kind?: NodeKind; kinds?: NodeKind[] }): SearchResult[];
   findSymbolMatches(symbol: string): Node[];
@@ -70,6 +78,8 @@ export interface LocalQueryApi {
   findCallers(symbol: string, options?: { limit?: number }): RelatedSymbolResult;
   findCallees(symbol: string, options?: { limit?: number }): RelatedSymbolResult;
   analyzeImpact(symbol: string, options?: { depth?: number }): ImpactQueryResult;
+  findAffectedTests(files: string[], options?: { depth?: number; filter?: string }): AffectedTestsResult;
+  buildTaskContext(input: string, options?: BuildContextOptions): Promise<TaskContext | string>;
   listFiles(options?: FileQueryOptions): FileRecord[];
   getIndexStatus(): LocalIndexStatus;
 }
@@ -289,6 +299,78 @@ class CodeGraphLocalQueryApi implements LocalQueryApi {
     }
 
     return [...files].sort((a, b) => a.path.localeCompare(b.path));
+  }
+
+  findAffectedTests(files: string[], options: { depth?: number; filter?: string } = {}): AffectedTestsResult {
+    const maxDepth = options.depth ?? 5;
+
+    // Common test file patterns
+    const defaultTestPatterns = [
+      /\.spec\./,
+      /\.test\./,
+      /\/(__tests__|tests?)\//,
+      /\/e2e\//,
+      /\/spec\//,
+    ];
+
+    // Custom filter pattern
+    let customFilter: RegExp | null = null;
+    if (options.filter) {
+      const regex = options.filter
+        .replace(/[+\[\]{}()^$|\\]/g, '\\$&')
+        .replace(/\./g, '\\.')
+        .replace(/\*\*/g, '.+')
+        .replace(/\*/g, '[^/]*');
+      customFilter = new RegExp(regex);
+    }
+
+    function isTestFile(filePath: string): boolean {
+      if (customFilter) return customFilter.test(filePath);
+      return defaultTestPatterns.some((p) => p.test(filePath));
+    }
+
+    // BFS to find all transitive dependents of changed files, filtered to test files
+    const affectedTests = new Set<string>();
+    const allDependents = new Set<string>();
+
+    for (const file of files) {
+      if (isTestFile(file)) {
+        affectedTests.add(file);
+        continue;
+      }
+
+      const queue: Array<{ file: string; depth: number }> = [{ file, depth: 0 }];
+      const visited = new Set<string>();
+      visited.add(file);
+
+      while (queue.length > 0) {
+        const current = queue.shift()!;
+        if (current.depth >= maxDepth) continue;
+
+        const dependents = this.cg.getFileDependents(current.file);
+        for (const dep of dependents) {
+          if (visited.has(dep)) continue;
+          visited.add(dep);
+          allDependents.add(dep);
+
+          if (isTestFile(dep)) {
+            affectedTests.add(dep);
+          } else {
+            queue.push({ file: dep, depth: current.depth + 1 });
+          }
+        }
+      }
+    }
+
+    return {
+      changedFiles: files,
+      affectedTests: Array.from(affectedTests).sort(),
+      totalDependentsTraversed: allDependents.size,
+    };
+  }
+
+  buildTaskContext(input: string, options?: BuildContextOptions): Promise<TaskContext | string> {
+    return this.cg.buildContext(input, options);
   }
 
   getIndexStatus(): LocalIndexStatus {

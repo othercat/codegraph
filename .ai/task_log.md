@@ -1,5 +1,31 @@
 # Task Log: CodeGraph
 
+## 2026-06-05 给 CC 补充 MCP fallback 读取规则
+
+### 用户需求
+
+用户说明这套能力转换目前是给 Codex 的，但希望 Claude Code/CC 也能直接读取 CodeGraph 的 `.ai/handover.md`，在无法使用 MCP 或遇到 `Transport closed` 时不要误判索引损坏，也不要因此损失 CodeGraph 查询能力。
+
+### 过程记录
+
+1. 按 Repo Map First 读取 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/codex_rules.md`、`.ai/token_saving_rules.md`、`.ai/task_log.md`。
+2. 运行 `codegraph status --json .`，确认 `initialized=true` 且 `pendingChanges.added/modified/removed=0`，未运行 `sync` 或 `index`。
+3. 在 `.ai/handover.md` 增加“给 CC / Claude Code 的使用说明：MCP 不可用时不要损失 CodeGraph 能力”章节。
+4. 明确 CC fallback：MCP 工具不可见或 `Transport closed` 时，先 `codegraph status --json <project>`；索引健康则改用 CLI 查询，不运行 `codegraph index`，不删除 `.codegraph/`。
+5. 写入优先级说明：若旧文档仍出现“每次 init + index”或“fallback 最后必须 index”，以新的 handover 章节为准。
+
+### 修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `.ai/handover.md` | 新增 CC/Claude Code 直接读取的 CodeGraph CLI fallback 规则 |
+| `.ai/task_log.md` | 记录本次 handover 更新 |
+
+### 验证结果
+
+- `codegraph status --json .`：`initialized=true`，pending 三项为 0。
+- `git diff --check -- .ai/handover.md .ai/task_log.md`：通过。
+
 ## 2026-06-05 落地本地查询 API + CLI 主路径
 
 ### 用户需求
@@ -43,6 +69,53 @@
 
 1. 后续可继续把 `context` / `affected` 的更高层查询也收束到本地 API，但应保持小步测试驱动。
 2. 若再遇到 MCP `Transport closed`，先按 server instructions 跑 status guard；健康索引时走 CLI/API fallback，不重建 `.codegraph/`。
+
+---
+
+## 2026-06-05 验证并推进架构调整：本地 API + CLI 主路径，MCP 适配器
+
+### 用户需求
+
+继续推进 CodeGraph 架构调整：确认本地查询 API、CLI 主路径、MCP 适配器模式已落地，并验证所有相关测试通过。
+
+### 过程记录
+
+1. 读取 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/task_log.md`、`.ai/decisions.md`。确认 ADR-005 已记录架构决策。
+2. 运行 `codegraph status --json .`：`initialized=true`，pending added/modified/removed 均为 0，backend 为 `better-sqlite3`，未运行 `sync`/`index`。
+3. 读取 `src/query/local-api.ts`（完整存在，10KB+），确认 `LocalQueryApi` / `createLocalQueryApi` / `CodeGraphLocalQueryApi` 实现完整。
+4. 读取 `src/index.ts`，确认 `createLocalQueryApi` 和相关类型/工具函数已导出。
+5. 读取 `src/mcp/server-instructions.ts`，确认 MCP fallback 规则已写入（`Transport closed` → status guard → 本地库/CLI，不 index，不删 `.codegraph/`）。
+6. grep 确认 `src/bin/codegraph.ts`：status/query/files/callers/callees/impact 全部调用 `createLocalQueryApi(cg)`。
+7. grep 确认 `src/mcp/tools.ts`：search/callers/callees/impact/files/status/findSymbolMatches/findAllSymbols 全部调用 `createLocalQueryApi(cg)`。
+8. 检查 `context` 命令在 CLI 中未实现；`affected` 命令直接调用 `cg.getFileDependents()`（CodeGraph 公共 API）。两者均无需额外收束到本地 API。
+9. 运行 `npm run build`：通过。
+10. 运行相关 vitest：`local-query-api.test.ts` (2 passed)、`mcp-server-instructions-fallback.test.ts` (1 passed)、`mcp-files-path-normalization.test.ts` (13 passed)、`mcp-staleness-banner.test.ts` (5 passed)。共 4 files / 21 tests 全部通过。
+11. 运行 `codegraph status --json .`：索引健康。
+12. 运行 `git diff --check`：无 whitespace error。
+
+### 结论
+
+架构调整的核心目标已全部实现：
+- `src/query/local-api.ts` 是标准本地查询门面，封装 search、symbol matching、callers/callees/impact 聚合、files 过滤、status 健康摘要。
+- CLI 的 status/query/files/callers/callees/impact 全部走本地 API。
+- MCP tools 的 search/callers/callees/impact/files/status/findSymbolMatches/findAllSymbols 全部走同一本地 API。
+- `server-instructions.ts` 已记录 `Transport closed` fallback 规则。
+- `src/index.ts` 已导出 `createLocalQueryApi` 和相关类型。
+- 无代码改动，本次为验证 + 文档更新。
+
+### 修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `.ai/task_log.md` | 新增本次验证记录 |
+| `.ai/handover.md` | 更新当前判断和下一步 |
+
+### 验证结果
+
+- `npm run build` ✅
+- `npx vitest run __tests__/local-query-api.test.ts __tests__/mcp-server-instructions-fallback.test.ts __tests__/mcp-files-path-normalization.test.ts __tests__/mcp-staleness-banner.test.ts` ✅ (4 files, 21 tests)
+- `codegraph status --json .` ✅ (initialized=true, pending=0)
+- `git diff --check` ✅
 
 ## 2026-06-05 记录 Codex 侧 CodeGraph 入口架构判断
 
@@ -394,3 +467,56 @@ A  docs/setup-guide.md
 - `git diff --check -- AGENTS.md .agents` ✅：无 whitespace error。
 - `npm run build` ✅：tsc + copy-assets 成功。
 - `git push origin main` ✅：未跟踪内容提交后成功推送到远程 `main`。
+
+
+## 2026-06-06 把 context / affected 高层查询纳入本地 API
+
+### 用户需求
+
+把 `context` 和 `affected` 的高层查询也纳入本地 API (`src/query/local-api.ts`)，使 CLI 和 MCP tools 都能复用同一套标准本地查询 API。
+
+### 过程记录
+
+1. 按 Repo Map First 流程读取 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/codex_rules.md`、`.ai/token_saving_rules.md`、`.ai/task_log.md`。
+2. 运行 `codegraph status --json .`，确认 `initialized=true` 且 `pendingChanges.added/modified/removed` 全为 0，未运行 `sync` 或 `index`。
+3. 通过 CodeGraph CLI 查询 `context`、`affected`、`buildContext`、`getFileDependents`、`LocalQueryApi` 等符号，确认：
+   - `context` 命令在 CLI help 文本中存在，但没有实际的 `.command('context')` 实现。
+   - `affected` 命令直接调用 `cg.getFileDependents()` 进行 BFS，自己实现了 test file 检测和输出格式化。
+   - `src/index.ts` 中 `CodeGraph` 类已有 `getFileDependents()` 和 `buildContext()` 方法。
+4. 读取 `src/query/local-api.ts`、`src/bin/codegraph.ts` 中 affected 命令实现、`src/index.ts` 相关方法、`src/context/index.ts` 中 `ContextBuilder.buildContext`、`src/types.ts` 中 `TaskInput`/`TaskContext`/`BuildContextOptions`。
+5. 修改 `src/query/local-api.ts`：
+   - `LocalQuerySource` 接口添加 `getFileDependents(filePath: string): string[]` 和 `buildContext(input: TaskInput, options?: BuildContextOptions): Promise<TaskContext | string>`。
+   - `LocalQueryApi` 接口添加 `findAffectedTests(files: string[], options?: { depth?: number; filter?: string }): AffectedTestsResult` 和 `buildTaskContext(input: string, options?: BuildContextOptions): Promise<TaskContext | string>`。
+   - `CodeGraphLocalQueryApi` 实现 `findAffectedTests`（含 BFS、test file 检测、自定义 filter）和 `buildTaskContext`。
+6. 修改 `src/bin/codegraph.ts`：
+   - `affected` 命令改为调用 `api.findAffectedTests()`，移除内联 BFS 和 test file 检测逻辑。
+   - 新增 `context` CLI 命令，调用 `api.buildTaskContext()`，支持 `--depth`、`-max-nodes`、`--json`、`--quiet` 选项。
+7. 修改 `__tests__/local-query-api.test.ts`：
+   - 添加 `findAffectedTests` 测试：验证无 test files 时返回空，test file 自身被包含。
+   - 添加 `buildTaskContext` 测试：验证能返回 TaskContext 或字符串结果。
+8. 验证：
+   - `npm run build`：通过。
+   - `npx vitest run __tests__/local-query-api.test.ts`：4 tests 全部通过。
+   - CLI smoke：`node dist/bin/codegraph.js context "find leaf function" --path . --json` 返回有效 JSON。
+   - CLI smoke：`node dist/bin/codegraph.js affected src/query/local-api.ts --path . --json` 返回正确结构。
+   - `git diff --check`：通过，无 whitespace error。
+
+### 修改文件
+
+| 文件 | 说明 |
+|------|------|
+| `src/query/local-api.ts` | 扩展 `LocalQuerySource`/`LocalQueryApi` 接口，新增 `AffectedTestsResult`，实现 `findAffectedTests` 和 `buildTaskContext` |
+| `src/bin/codegraph.ts` | `affected` 命令改走本地 API；新增 `context` CLI 命令 |
+| `__tests__/local-query-api.test.ts` | 补充 `findAffectedTests` 和 `buildTaskContext` 测试 |
+
+### 验证结果
+
+- `npm run build` ✅
+- `npx vitest run __tests__/local-query-api.test.ts` ✅ (4 tests)
+- `codegraph status --json .` ✅ (initialized=true, pending=0)
+- `git diff --check` ✅
+
+### 下一步
+
+1. 如需继续推进，可考虑把 MCP tools 中的 `explore` 和 `node` 也逐步收束到本地 API，但应保持小步测试驱动，避免顺手重构 MCP 的大块渲染逻辑。
+2. 保持 `.ai/` 文件的维护，每次任务结束更新 `task_log.md` 和 `handover.md`。

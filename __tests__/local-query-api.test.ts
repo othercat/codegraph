@@ -59,4 +59,35 @@ describe('local query API', () => {
     expect(status.fileCount).toBe(1);
     expect(status.backend).toBeTruthy();
   });
+
+  it('finds affected tests through the local API', async () => {
+    const api = createLocalQueryApi(cg);
+
+    // With only src/flow.ts and no test files, nothing should be affected
+    const result = api.findAffectedTests(['src/flow.ts'], { depth: 5 });
+    expect(result.changedFiles).toEqual(['src/flow.ts']);
+    expect(result.affectedTests).toEqual([]);
+    expect(result.totalDependentsTraversed).toBe(0);
+
+    // A test file itself should be included
+    const result2 = api.findAffectedTests(['src/flow.test.ts'], { depth: 5 });
+    expect(result2.affectedTests).toEqual(['src/flow.test.ts']);
+  });
+
+  it('builds task context through the local API', async () => {
+    const api = createLocalQueryApi(cg);
+
+    const result = await api.buildTaskContext('find leaf function', {
+      maxNodes: 10,
+      includeCode: false,
+    });
+
+    // Result may be TaskContext or string depending on options
+    expect(result).toBeTruthy();
+    if (typeof result !== 'string') {
+      expect(result.query).toContain('leaf');
+      expect(result.subgraph).toBeDefined();
+      expect(result.entryPoints).toBeDefined();
+    }
+  });
 });

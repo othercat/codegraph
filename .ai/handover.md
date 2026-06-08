@@ -2,12 +2,70 @@
 
 ## 2026-06-05 本次交接更新：本地查询 API 已落地
 
-- 已新增 `src/query/local-api.ts`，作为标准本地查询 API：集中 search、symbol matching、callers/callees/impact 聚合、files 过滤和 status 健康摘要。
-- `src/bin/codegraph.ts` 的 `status/query/files/callers/callees/impact` 已改为调用本地 API；CLI 是本地主路径，不需要 MCP 才能查询。
+- 已新增 `src/query/local-api.ts`，作为标准本地查询 API：集中 search、symbol matching、callers/callees/impact 聚合、files 过滤、status 健康摘要、`findAffectedTests` 和 `buildTaskContext`。
+- `src/bin/codegraph.ts` 的 `status/query/files/callers/callees/impact/context/affected` 全部改为调用本地 API；CLI 是本地主路径，不需要 MCP 才能查询。
 - `src/mcp/tools.ts` 的对应 tools 已改为调用同一 API；MCP 现在主要承担参数校验、输出格式、staleness/worktree notice 和 explore/node 的 MCP 专用渲染。
 - `src/mcp/server-instructions.ts` 已写入 fallback 规则：MCP `Transport closed` 先视为 transport/adapter 故障；先跑 `codegraph status --json <project>`；若 `initialized=true` 且 `pendingChanges` 三项为 0，索引健康，走本地库/API 或 CLI，不运行 `codegraph index`，不删除 `.codegraph/`。
-- 验证通过：`npm run build`；本地 API/MCP fallback/MCP files/staleness 相关 vitest；CLI `query`/`files` smoke；`codegraph status --json .` 显示 pending 为 0。
-- 下一步建议：若继续推进，可把 `context` 和 `affected` 的高层查询也纳入本地 API，但要继续用小步 TDD，避免顺手重构 MCP explore/node 的大块渲染逻辑。
+- 验证通过：`npm run build`；本地 API/MCP fallback/MCP files/staleness 相关 vitest；CLI `query`/`files`/`context`/`affected` smoke；`codegraph status --json .` 显示 pending 为 0。
+- 下一步建议：如需继续推进，可考虑把 MCP tools 中的 `explore` 和 `node` 也逐步收束到本地 API，但应保持小步测试驱动，避免顺手重构 MCP 的大块渲染逻辑。
+
+## 给 CC / Claude Code 的使用说明：MCP 不可用时不要损失 CodeGraph 能力
+
+本节是给 Claude Code/CC 直接读取的操作规则。当前 CodeGraph 架构已经从“依赖 MCP Server 才能查询”调整为“标准本地核心库/API + CLI 为主路径，MCP Server 是兼容适配器”。
+
+### 核心判断
+
+- `.codegraph/` SQLite 索引、本地库/API、CLI 才是 CodeGraph 查询能力的主路径。
+- MCP 只是把同一套能力暴露给支持 MCP 的 Agent；MCP 失败不等于 CodeGraph 索引坏。
+- 如果 MCP 工具不可见、MCP server 断开、或出现 `Transport closed`，先视为 transport/adaptor 层故障。
+- 不要因为 MCP 失败就运行 `codegraph index`，也不要删除 `.codegraph/`。
+
+### CC 启动守卫
+
+每次进入项目或开始任务时，先运行：
+
+```bash
+codegraph status --json .
+```
+
+按结果处理：
+
+- `initialized=true` 且 `pendingChanges.added/modified/removed` 全为 0：索引健康，直接继续。
+- `initialized=true` 且存在 pending changes：只运行 `codegraph sync .`。
+- `initialized=false` 或 `.codegraph/` 缺失：运行 `codegraph init .`。`init` 会建立初始索引，不要紧接着再运行 `index`。
+- 只有索引损坏、schema/提取器重大变更、或用户明确要求强制重建时，才运行 `codegraph index .` 或删除 `.codegraph/`。
+
+### MCP 失败时的 fallback
+
+如果 CC 无法调用 CodeGraph MCP，或 MCP 报 `Transport closed`：
+
+1. 运行 `codegraph status --json <project>`。
+2. 如果 `initialized=true` 且 `pendingChanges.added=0`、`pendingChanges.modified=0`、`pendingChanges.removed=0`，判定本地索引健康。
+3. 改用 CLI 查询；不要重建索引。
+
+常用 CLI 查询：
+
+```bash
+codegraph query <symbol-or-keyword> --path <project> --limit 10
+codegraph files --path <project> --filter <path-or-name>
+codegraph callers <symbol> --path <project>
+codegraph callees <symbol> --path <project>
+codegraph impact <symbol> --path <project>
+codegraph status --json <project>
+```
+
+### CC 工作流
+
+1. 先读 `.ai/handover.md`、`.ai/repo_map.md`、`.ai/codex_rules.md`、`.ai/token_saving_rules.md`、`.ai/task_log.md`。
+2. 运行 `codegraph status --json .`，按上面的启动守卫处理。
+3. 找代码、理解流程、追踪调用链、分析影响时，先用 MCP 或 CLI 的 CodeGraph 查询。
+4. 在读取文件前先列 `Candidate Files` 和 `Evidence Chain`。
+5. 只读取关键文件/片段，做最小 patch，跑最小相关验证。
+6. 任务结束更新 `.ai/task_log.md` 和 `.ai/handover.md`。
+
+### 优先级说明
+
+如果旧文档里仍出现“每次 `init + index`”或“CLI fallback 最后必须 index”之类说法，以本节为准：默认路径是 `status -> sync/init`，`index` 只用于强制重建或确认损坏。
 
 ## 当前目标
 
@@ -85,15 +143,22 @@
 
 CodeGraph 项目本身对自己的 dogfooding 已完成初步建立。`.ai/` 体系现在包含 7 个文件，覆盖了项目地图、规则、日志、决策、记忆索引。
 
-新的产品/架构判断：CodeGraph 的真正能力边界应在 `.codegraph` SQLite 索引、`src/index.ts` 公共 API、数据库/图查询核心模块和 CLI 上；MCP 只是把这套能力暴露给支持 MCP 的 Agent。后续不要把“Agent 能否通过 MCP 连接成功”等同于“CodeGraph 能否查询成功”。
+新的产品/架构判断：CodeGraph 的真正能力边界应在 `.codegraph` SQLite 索引、`src/index.ts` 公共 API、数据库/图查询核心模块和 CLI 上；MCP 只是把这套能力暴露给支持 MCP 的 Agent。后续不要把”Agent 能否通过 MCP 连接成功”等同于”CodeGraph 能否查询成功”。
+
+**2026-06-05 验证结论**：本地查询 API (`src/query/local-api.ts`) + CLI 主路径 + MCP 适配器模式已完整落地：
+- CLI 的 status/query/files/callers/callees/impact 全部调用 `createLocalQueryApi(cg)`。
+- MCP tools 的 search/callers/callees/impact/files/status/findSymbolMatches/findAllSymbols 全部调用同一本地 API。
+- `server-instructions.ts` 已记录 `Transport closed` fallback 规则。
+- `src/index.ts` 已导出 `createLocalQueryApi` 和相关类型。
+- 相关测试（21 tests across 4 files）全部通过。
 
 需要关注 `.ai/` 的维护：这些文件必须随项目演化而更新，否则会迅速过时变成噪音。每次任务结束时更新 `task_log.md` 和 `handover.md` 是关键。
 
 ## 下一步建议
 
-1. 在 CodeGraph 项目中继续推进“核心库/API + CLI 主路径，MCP 兼容适配器”的实现和文档化。
-2. 梳理当前 MCP tools 是否可以复用同一套标准本地查询 API，避免 MCP 层拥有独立业务逻辑。
-3. 给 Codex/Agent 侧写清楚 fallback 规则：MCP 报 `Transport closed` 时，先 `codegraph status --json <project>`；若 `initialized=true` 且 pending 为 0，判定为 transport 故障，改走本地库/CLI 查询，不运行 `index`。
+1. ✅ 已完成：本地查询 API (`src/query/local-api.ts`) + CLI 主路径 + MCP 适配器模式已落地，MCP tools 已复用同一套标准本地查询 API。
+2. ✅ 已完成：MCP `Transport closed` fallback 规则已写入 `server-instructions.ts` 和 `.ai/handover.md`。
+3. **推广到所有项目**：把”本地 API + CLI 为主路径，MCP 为适配器”的 fallback 规则写入 Claude Code 全局 `~/.claude/CLAUDE.md`，使所有项目在遇到 MCP `Transport closed` 时都能自动走 CLI fallback，而不是误判索引损坏。
 4. 新 session 进入项目后，继续验证是否自动先读 `.ai/`，并确认 CodeGraph startup guard 仍按 `status -> sync/init` 执行。
 5. 如需使用 gh 创建 PR 或调用 GitHub API，先运行 `gh auth status` 确认登录状态。
 

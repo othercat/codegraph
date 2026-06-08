@@ -1356,6 +1356,64 @@ program
   });
 
 /**
+ * codegraph context <task>
+ *
+ * Build context for a task.
+ * Combines semantic search with graph traversal to find the most
+ * relevant nodes and their relationships for a given task description.
+ */
+program
+  .command('context <task>')
+  .description('Build context for a task')
+  .option('-p, --path <path>', 'Project path')
+  .option('-d, --depth <number>', 'Graph traversal depth', '2')
+  .option('-n, --max-nodes <number>', 'Maximum nodes to include', '50')
+  .option('-j, --json', 'Output as JSON')
+  .option('-q, --quiet', 'Only output context, no decoration')
+  .action(async (task: string, options: { path?: string; depth?: string; maxNodes?: string; json?: boolean; quiet?: boolean }) => {
+    const projectPath = resolveProjectPath(options.path);
+
+    try {
+      if (!isInitialized(projectPath)) {
+        error(`CodeGraph not initialized in ${projectPath}`);
+        process.exit(1);
+      }
+
+      const { default: CodeGraph } = await loadCodeGraph();
+      const cg = await CodeGraph.open(projectPath);
+      const api = createLocalQueryApi(cg);
+
+      const result = await api.buildTaskContext(task, {
+        traversalDepth: parseInt(options.depth || '2', 10),
+        maxNodes: parseInt(options.maxNodes || '50', 10),
+        format: options.json ? 'json' : 'markdown',
+      });
+
+      if (typeof result === 'string') {
+        console.log(result);
+      } else if (options.json) {
+        console.log(JSON.stringify(result, null, 2));
+      } else {
+        console.log(chalk.bold(`\nContext for: ${task}\n`));
+        console.log(`Nodes: ${result.subgraph.nodes.size}, Edges: ${result.subgraph.edges.length}`);
+        console.log(`Entry points: ${result.entryPoints.map((n) => n.name).join(', ')}`);
+        if (result.codeBlocks && result.codeBlocks.length > 0) {
+          console.log(`\nCode blocks (${result.codeBlocks.length}):`);
+          for (const block of result.codeBlocks) {
+            console.log(`\n${chalk.cyan(block.filePath)}:${block.startLine}`);
+            console.log(chalk.dim(block.content.slice(0, 200) + (block.content.length > 200 ? '...' : '')));
+          }
+        }
+      }
+
+      cg.destroy();
+    } catch (err) {
+      error(`context failed: ${err instanceof Error ? err.message : String(err)}`);
+      process.exit(1);
+    }
+  });
+
+/**
  * codegraph affected [files...]
  *
  * Find test files affected by the given source files.
@@ -1399,87 +1457,29 @@ program
 
       const { default: CodeGraph } = await loadCodeGraph();
       const cg = await CodeGraph.open(projectPath);
+      const api = createLocalQueryApi(cg);
       const maxDepth = parseInt(options.depth || '5', 10);
 
-      // Common test file patterns
-      const defaultTestPatterns = [
-        /\.spec\./,
-        /\.test\./,
-        /\/__tests__\//,
-        /\/tests?\//,
-        /\/e2e\//,
-        /\/spec\//,
-      ];
-
-      // Custom filter pattern
-      let customFilter: RegExp | null = null;
-      if (options.filter) {
-        // Convert glob to regex: ** → .+, * → [^/]*, . → \.
-        const regex = options.filter
-          .replace(/[+[\]{}()^$|\\]/g, '\\$&')
-          .replace(/\./g, '\\.')
-          .replace(/\*\*/g, '.+')
-          .replace(/\*/g, '[^/]*');
-        customFilter = new RegExp(regex);
-      }
-
-      function isTestFile(filePath: string): boolean {
-        if (customFilter) return customFilter.test(filePath);
-        return defaultTestPatterns.some(p => p.test(filePath));
-      }
-
-      // BFS to find all transitive dependents of changed files, filtered to test files
-      const affectedTests = new Set<string>();
-      const allDependents = new Set<string>();
-
-      for (const file of changedFiles) {
-        // If the changed file is itself a test file, include it
-        if (isTestFile(file)) {
-          affectedTests.add(file);
-          continue;
-        }
-
-        // BFS through dependents
-        const queue: Array<{ file: string; depth: number }> = [{ file, depth: 0 }];
-        const visited = new Set<string>();
-        visited.add(file);
-
-        while (queue.length > 0) {
-          const current = queue.shift()!;
-          if (current.depth >= maxDepth) continue;
-
-          const dependents = cg.getFileDependents(current.file);
-          for (const dep of dependents) {
-            if (visited.has(dep)) continue;
-            visited.add(dep);
-            allDependents.add(dep);
-
-            if (isTestFile(dep)) {
-              affectedTests.add(dep);
-            } else {
-              queue.push({ file: dep, depth: current.depth + 1 });
-            }
-          }
-        }
-      }
-
-      const sortedTests = Array.from(affectedTests).sort();
+      const result = api.findAffectedTests(changedFiles, {
+        depth: maxDepth,
+        filter: options.filter,
+      });
 
       // Output
       if (options.json) {
         console.log(JSON.stringify({
-          changedFiles,
-          affectedTests: sortedTests,
-          totalDependentsTraversed: allDependents.size,
+          changedFiles: result.changedFiles,
+          affectedTests: result.affectedTests,
+          totalDependentsTraversed: result.totalDependentsTraversed,
         }, null, 2));
       } else if (options.quiet) {
-        for (const t of sortedTests) console.log(t);
+        for (const t of result.affectedTests) console.log(t);
       } else {
-        if (sortedTests.length === 0) {
+        if (result.affectedTests.length === 0) {
           info('No test files affected by the changed files.');
         } else {
-          console.log(chalk.bold(`\nAffected test files (${sortedTests.length}):\n`));
-          for (const t of sortedTests) {
+          console.log(chalk.bold(`\nAffected test files (${result.affectedTests.length}):\n`));
+          for (const t of result.affectedTests) {
             console.log('  ' + chalk.cyan(t));
           }
           console.log();
