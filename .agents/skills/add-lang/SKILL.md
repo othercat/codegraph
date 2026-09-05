@@ -1,14 +1,15 @@
 ---
 name: add-lang
-description: Add tree-sitter language support to codegraph end-to-end — wire the grammar + extractor, write tests, then benchmark extraction quality and retrieval value on 3 popular real-world repos. Use when the user runs /add-lang <language> or asks to add/support a new language (e.g. Lua, Elixir, Zig, OCaml) in codegraph.
+description: Add tree-sitter language support to codegraph end-to-end — wire the grammar + extractor, write tests, then benchmark extraction quality and retrieval value on 3 popular real-world repos. Use when the user invokes /add-lang with a language or asks to add/support a new language (e.g. Lua, Elixir, Zig, OCaml) in codegraph.
 ---
 
 # Add a language to CodeGraph
 
 Wire a new tree-sitter language into codegraph's extraction pipeline, prove it
 extracts real symbols on popular repos, and prove it beats no-codegraph for an
-agent. Runs **fully autonomously** — pick repos, benchmark, update docs, then
-report. **Never commit, push, publish, or tag** (house rule); leave all changes
+agent. Complete local implementation and deterministic verification autonomously.
+The paid benchmark, permission-bypass flags and global install changes require
+explicit scope and cost authorization; report that gate separately if not provided. **Never commit, push, publish, or tag** (house rule); leave all changes
 for the user to review.
 
 The argument is the language token used throughout the `Language` union, e.g.
@@ -17,7 +18,7 @@ single-token form everywhere (`csharp`, not `c#`).
 
 ## Prerequisites
 - Run from the codegraph repo root. `node`, `git`, `gh`, and a logged-in
-  `Codex` CLI (the benchmark spawns real `Codex -p` runs).
+  `claude` CLI (the benchmark spawns real `claude -p` runs).
 - The benchmark uses the local dev build — Step 8 builds + links it on PATH.
 
 ## Workflow
@@ -163,7 +164,7 @@ Tiers (match `corpus.json`): **Small** <~150 files · **Medium** ~150–1500 ·
 **Large** >~1500. Skip repos that are tagged `<lang>` but mostly another
 language. Write one cross-file architecture **question** per repo (the kind that
 needs tracing across files). Add a `"<Language>"` block to
-`.Codex/skills/agent-eval/corpus.json` (fields: `name`, `repo`, `size`,
+`.agents/skills/agent-eval/corpus.json` (fields: `name`, `repo`, `size`,
 `files`, `question`) so `/agent-eval` can reuse them.
 
 ### Step 8 — Benchmark all 3 (extraction + A/B)
@@ -187,7 +188,7 @@ Read each `parse-run.mjs` summary printed by `run-all.sh`: tool calls, file
   row to the **Supported Languages** table:
   `| <Lang> | \`.ext\` | Full support (classes, methods, …) |`.
 - **CHANGELOG.md**: add an `## [Unreleased]` section at the top (above the
-  latest version) with `### Added` → a user-perspective bullet, e.g.
+  latest version) with `### New Features` → a user-perspective bullet, e.g.
   *"CodeGraph now indexes **<Lang>** (`.ext`) — functions, classes, imports, and
   call edges."* If `## [Unreleased]` already exists, append under it. (It's
   folded into the next versioned block at release time.)
@@ -208,7 +209,7 @@ Hand the changes to the user. **Do not** run `git commit`/`push` or publish —
 releases go through the GitHub Actions Release workflow.
 
 ## Notes
-- The A/B spawns real **paid** `Codex -p` runs (opus, `--max-budget-usd`),
+- The A/B spawns real **paid** `claude -p` runs (opus, `--max-budget-usd`),
   2 arms × 3 repos. The corpus dir `/tmp/codegraph-corpus` is shared with
   `/agent-eval`, so clones are reused across runs.
 - Any new `*.wasm` must live in `src/extraction/wasm/` — `copy-assets` (run by

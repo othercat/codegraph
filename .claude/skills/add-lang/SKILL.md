@@ -1,14 +1,15 @@
 ---
 name: add-lang
-description: Add tree-sitter language support to codegraph end-to-end — wire the grammar + extractor, write tests, then benchmark extraction quality and retrieval value on 3 popular real-world repos. Use when the user runs /add-lang <language> or asks to add/support a new language (e.g. Lua, Elixir, Zig, OCaml) in codegraph.
+description: Add tree-sitter language support to codegraph end-to-end — wire the grammar + extractor, write tests, then benchmark extraction quality and retrieval value on 3 popular real-world repos. Use when the user invokes /add-lang with a language or asks to add/support a new language (e.g. Lua, Elixir, Zig, OCaml) in codegraph.
 ---
 
 # Add a language to CodeGraph
 
 Wire a new tree-sitter language into codegraph's extraction pipeline, prove it
 extracts real symbols on popular repos, and prove it beats no-codegraph for an
-agent. Runs **fully autonomously** — pick repos, benchmark, update docs, then
-report. **Never commit, push, publish, or tag** (house rule); leave all changes
+agent. Complete local implementation and deterministic verification autonomously.
+The paid benchmark, permission-bypass flags and global install changes require
+explicit scope and cost authorization; report that gate separately if not provided. **Never commit, push, publish, or tag** (house rule); leave all changes
 for the user to review.
 
 The argument is the language token used throughout the `Language` union, e.g.
@@ -187,7 +188,7 @@ Read each `parse-run.mjs` summary printed by `run-all.sh`: tool calls, file
   row to the **Supported Languages** table:
   `| <Lang> | \`.ext\` | Full support (classes, methods, …) |`.
 - **CHANGELOG.md**: add an `## [Unreleased]` section at the top (above the
-  latest version) with `### Added` → a user-perspective bullet, e.g.
+  latest version) with `### New Features` → a user-perspective bullet, e.g.
   *"CodeGraph now indexes **<Lang>** (`.ext`) — functions, classes, imports, and
   call edges."* If `## [Unreleased]` already exists, append under it. (It's
   folded into the next versioned block at release time.)

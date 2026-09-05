@@ -15,37 +15,16 @@ codegraph version on a chosen real-world repo. Drives the harness in
 
 ## Workflow
 
-Copy this checklist:
-```
-- [ ] 1. Pick version (local or npm)
-- [ ] 2. Pick language
-- [ ] 3. Pick repo by size
-- [ ] 4. Pick harness (headless / tmux / both)
-- [ ] 5. Run audit.sh in the background
-- [ ] 6. Report results
-```
+Reuse version, language, repository, question and harness choices already supplied
+by the user. Read the sibling `corpus.json` for available samples; bundle only the
+remaining material questions instead of asking four times. Resolve VERSION to
+`local`, `latest` or the requested version, and MODE to `headless`, `tmux` or `all`.
 
-**Step 1 — version.** Ask with `AskUserQuestion`: which codegraph version to test.
-Offer "Local dev build" and "Latest published"; the free-text "Other" lets the
-user type a specific version (e.g. `0.7.10`). Map the answer to a VERSION token:
-- "Local dev build" → `local`
-- "Latest published" → `latest`
-- a typed version → that string (e.g. `0.7.10`)
-
-**Step 2 — language.** Read `.claude/skills/agent-eval/corpus.json`. Ask with
-`AskUserQuestion` which language to test, listing the languages that have entries.
-
-**Step 3 — repo.** From the chosen language's entries, ask which repo. Label each
-option with its size and file count, e.g. `excalidraw — Medium (~600 files)`.
-Each entry carries the `repo` URL and a representative `question`.
-
-**Step 4 — harness.** Ask with `AskUserQuestion` which harness to run, and map
-the answer to a MODE token:
-- "Headless" → `headless` — `claude -p` with stream-json: exact tokens/cost and a
-  clean tool sequence (2 runs, fast, no TTY).
-- "Interactive (tmux)" → `tmux` — drives the real Claude TUI in tmux: faithful
-  Explore-subagent behavior, metrics from session logs (2 runs, slower).
-- "Both" → `all` — headless + interactive (4 runs).
+The existing harness runs paid Claude sessions, includes permission-bypass flags,
+rebuilds corpus indexes and may change the global CodeGraph install. Before running,
+ensure these effects and the cost/target scope are explicitly authorized. A generic
+instruction audit does not authorize this benchmark. Complete local inspection and
+deterministic checks first when approval is still needed; do not run examples blindly.
 
 **Step 5 — run.** Launch in the background (sets the version, clones if missing,
 wipes + re-indexes, runs the chosen arms — several minutes):
